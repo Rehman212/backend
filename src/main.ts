@@ -10,7 +10,7 @@ async function bootstrap() {
     credentials: true,
   });
 
-  const port = process.env.PORT ?? 3000;
+  const port = process.env.PORT ?? 4000;
   // Listen on 0.0.0.0 so the app is reachable from outside the EC2 instance
   await app.listen(port, '0.0.0.0');
   console.log(`Application running on port ${port}`);
