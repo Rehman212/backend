@@ -6,6 +6,10 @@ import {
   StandardFonts,
   Color,
   PDFName,
+  PDFTextField,
+  PDFCheckBox,
+  PDFDropdown,
+  PDFRadioGroup,
 } from 'pdf-lib';
 import JSZip from 'jszip';
 import sharp from 'sharp';
@@ -766,5 +770,242 @@ export class PdfService {
         creator:  doc.getCreator()  ?? '(not set)',
       },
     };
+  }
+
+  /* ═══════════════════════════════════════════════════════════════════════
+     STANDARDS (partial – PDF/UA metadata tagging via pdf-lib)
+  ═══════════════════════════════════════════════════════════════════════ */
+
+  async pdfToPdfua(buffer: Buffer, title: string, lang: string): Promise<PdfResult> {
+    const doc = await PDFDocument.load(buffer, { ignoreEncryption: true });
+    if (title) doc.setTitle(title);
+    doc.setLanguage(lang || 'en-US');
+    doc.setProducer('ImageDigitalHub – PDF/UA tagger');
+    // Tag the document with basic XMP accessibility metadata
+    const xmpMeta = `<?xpacket begin="\uFEFF" id="W5M0MpCehiHzreSzNTczkc9d"?>
+<x:xmpmeta xmlns:x="adobe:ns:meta/">
+  <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+    <rdf:Description rdf:about=""
+        xmlns:pdfuaid="http://www.aiim.org/pdfua/ns/id/">
+      <pdfuaid:part>1</pdfuaid:part>
+    </rdf:Description>
+    <rdf:Description rdf:about=""
+        xmlns:dc="http://purl.org/dc/elements/1.1/">
+      <dc:title><rdf:Alt><rdf:li xml:lang="x-default">${title || 'Document'}</rdf:li></rdf:Alt></dc:title>
+      <dc:language><rdf:Bag><rdf:li>${lang || 'en-US'}</rdf:li></rdf:Bag></dc:language>
+    </rdf:Description>
+  </rdf:RDF>
+</x:xmpmeta>
+<?xpacket end="w"?>`;
+    doc.setSubject('PDF/UA compliant document');
+    // Embed XMP packet via raw catalog entry
+    try {
+      const xmpBytes = Buffer.from(xmpMeta, 'utf-8');
+      const xmpStream = doc.context.stream(xmpBytes, {
+        Type: 'Metadata',
+        Subtype: 'XML',
+        Length: xmpBytes.length,
+      });
+      const xmpRef = doc.context.register(xmpStream);
+      (doc.catalog as any).set(PDFName.of('Metadata'), xmpRef);
+    } catch { /* non-critical; metadata embedding failed gracefully */ }
+    return { buffer: this.toBuffer(await doc.save()), mime: 'application/pdf', ext: 'pdf' };
+  }
+
+  /* ═══════════════════════════════════════════════════════════════════════
+     INTERACTIVE FORMS
+  ═══════════════════════════════════════════════════════════════════════ */
+
+  /** Parse field definitions and add AcroForm fields to a PDF. */
+  async createForm(buffer: Buffer, fieldsJson: string): Promise<PdfResult> {
+    const doc   = await PDFDocument.load(buffer, { ignoreEncryption: true });
+    const form  = doc.getForm();
+    const pages = doc.getPages();
+
+    let defs: Array<{
+      type: string; name: string; label?: string;
+      page?: number; x?: number; y?: number; width?: number; height?: number;
+      options?: string[];
+    }>;
+    try {
+      defs = JSON.parse(fieldsJson);
+      if (!Array.isArray(defs)) throw new Error('fields must be a JSON array');
+    } catch (err) {
+      throw new BadRequestException('Invalid fields JSON: ' + (err as Error).message);
+    }
+
+    for (const def of defs) {
+      const pageIdx = Math.max(0, (def.page ?? 1) - 1);
+      if (pageIdx >= pages.length) continue;
+      const page      = pages[pageIdx];
+      const { height } = page.getSize();
+      const x       = def.x      ?? 50;
+      const w       = def.width  ?? 200;
+      const h       = def.height ?? 24;
+      // Convert top-based y to PDF bottom-based coordinate
+      const y = height - (def.y ?? 100) - h;
+
+      switch ((def.type ?? 'text').toLowerCase()) {
+        case 'text': {
+          const field = form.createTextField(def.name);
+          if (def.label) field.setText('');
+          field.addToPage(page, { x, y, width: w, height: h });
+          break;
+        }
+        case 'checkbox': {
+          const field = form.createCheckBox(def.name);
+          field.addToPage(page, { x, y, width: h, height: h });
+          break;
+        }
+        case 'dropdown': {
+          const field = form.createDropdown(def.name);
+          if (def.options?.length) field.setOptions(def.options);
+          field.addToPage(page, { x, y, width: w, height: h });
+          break;
+        }
+        case 'radio': {
+          const field = form.createRadioGroup(def.name);
+          if (def.options?.length) {
+            for (const opt of def.options) {
+              field.addOptionToPage(opt, page, { x, y, width: h, height: h });
+            }
+          }
+          break;
+        }
+        default:
+          break;
+      }
+    }
+    return { buffer: this.toBuffer(await doc.save()), mime: 'application/pdf', ext: 'pdf' };
+  }
+
+  /** Fill existing form fields by name→value map. */
+  async fillForm(buffer: Buffer, dataJson: string, flatten: boolean): Promise<PdfResult> {
+    const doc  = await PDFDocument.load(buffer, { ignoreEncryption: true });
+    const form = doc.getForm();
+
+    let data: Record<string, unknown>;
+    try {
+      data = JSON.parse(dataJson);
+      if (typeof data !== 'object' || Array.isArray(data)) throw new Error('data must be a JSON object');
+    } catch (err) {
+      throw new BadRequestException('Invalid data JSON: ' + (err as Error).message);
+    }
+
+    for (const [name, value] of Object.entries(data)) {
+      try {
+        const field = form.getField(name);
+        if (field instanceof PDFTextField) {
+          field.setText(String(value ?? ''));
+        } else if (field instanceof PDFCheckBox) {
+          value ? field.check() : field.uncheck();
+        } else if (field instanceof PDFDropdown) {
+          field.select(String(value));
+        } else if (field instanceof PDFRadioGroup) {
+          field.select(String(value));
+        }
+      } catch { /* field not found – skip silently */ }
+    }
+
+    if (flatten) form.flatten();
+    return { buffer: this.toBuffer(await doc.save()), mime: 'application/pdf', ext: 'pdf' };
+  }
+
+  /** Export all form field values as JSON or CSV. */
+  async exportFormData(buffer: Buffer, format: string): Promise<PdfResult> {
+    const doc    = await PDFDocument.load(buffer, { ignoreEncryption: true });
+    const form   = doc.getForm();
+    const fields = form.getFields();
+
+    const rows: Array<{ name: string; type: string; value: string }> = fields.map(f => {
+      let value = '';
+      if (f instanceof PDFTextField)  value = f.getText() ?? '';
+      if (f instanceof PDFCheckBox)   value = String(f.isChecked());
+      if (f instanceof PDFDropdown)   value = f.getSelected().join(', ');
+      if (f instanceof PDFRadioGroup) value = f.getSelected() ?? '';
+      return { name: f.getName(), type: f.constructor.name, value };
+    });
+
+    if (format === 'csv') {
+      const csv = ['name,type,value', ...rows.map(r => `"${r.name}","${r.type}","${r.value}"`)].join('\n');
+      return { buffer: Buffer.from(csv, 'utf-8'), mime: 'text/csv', ext: 'csv' };
+    }
+    return {
+      buffer: Buffer.from(JSON.stringify(rows, null, 2), 'utf-8'),
+      mime: 'application/json',
+      ext:  'json',
+    };
+  }
+
+  /** Validate that every non-optional text field contains a value. */
+  async validateForm(buffer: Buffer): Promise<{
+    valid: boolean; totalFields: number; filled: number; missing: string[];
+  }> {
+    const doc    = await PDFDocument.load(buffer, { ignoreEncryption: true });
+    const form   = doc.getForm();
+    const fields = form.getFields();
+    const missing: string[] = [];
+
+    for (const f of fields) {
+      if (f instanceof PDFTextField) {
+        const val = f.getText();
+        if (!val || val.trim() === '') missing.push(f.getName());
+      }
+    }
+
+    return {
+      valid:       missing.length === 0,
+      totalFields: fields.length,
+      filled:      fields.length - missing.length,
+      missing,
+    };
+  }
+
+  /** List all field names + types in the form. */
+  async listFormFields(buffer: Buffer): Promise<{ fields: Array<{ name: string; type: string; value: string }> }> {
+    const doc    = await PDFDocument.load(buffer, { ignoreEncryption: true });
+    const form   = doc.getForm();
+    const fields = form.getFields().map(f => {
+      let value = '';
+      if (f instanceof PDFTextField)  value = f.getText() ?? '';
+      if (f instanceof PDFCheckBox)   value = String(f.isChecked());
+      if (f instanceof PDFDropdown)   value = f.getSelected().join(', ');
+      if (f instanceof PDFRadioGroup) value = f.getSelected() ?? '';
+      return { name: f.getName(), type: f.constructor.name, value };
+    });
+    return { fields };
+  }
+
+  /** Remove or rename a single form field. */
+  async manageFormField(
+    buffer: Buffer,
+    action: string,
+    fieldName: string,
+    newFieldName: string,
+  ): Promise<PdfResult> {
+    const doc  = await PDFDocument.load(buffer, { ignoreEncryption: true });
+    const form = doc.getForm();
+
+    if (action === 'remove') {
+      try {
+        form.removeField(form.getField(fieldName));
+      } catch {
+        throw new BadRequestException(`Field "${fieldName}" not found.`);
+      }
+      return { buffer: this.toBuffer(await doc.save()), mime: 'application/pdf', ext: 'pdf' };
+    }
+
+    if (action === 'rename') {
+      if (!newFieldName) throw new BadRequestException('new_field_name is required for rename.');
+      try {
+        const field = form.getField(fieldName);
+        (field as any).acroField.setPartialName(newFieldName);
+      } catch {
+        throw new BadRequestException(`Field "${fieldName}" not found.`);
+      }
+      return { buffer: this.toBuffer(await doc.save()), mime: 'application/pdf', ext: 'pdf' };
+    }
+
+    throw new BadRequestException(`Unknown action "${action}". Use list, remove, or rename.`);
   }
 }

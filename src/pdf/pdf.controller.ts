@@ -779,4 +779,149 @@ export class PdfController {
       this.err(res, 500, (e as Error).message);
     }
   }
+
+  @Post('pdf-to-pdfx')
+  @UseInterceptors(FileInterceptor('file'))
+  async pdfToPdfx(@UploadedFile() file: MFile, @Res() res: Response) {
+    if (!file) return this.err(res, 400, 'No file uploaded.');
+    this.notImplemented(
+      res,
+      'PDF/X conversion requires Ghostscript or a commercial prepress PDF library. ' +
+      'It involves colour-profile embedding, output-intent metadata, and print-specific constraints ' +
+      'that cannot be applied with pdf-lib alone.',
+    );
+  }
+
+  @Post('pdf-to-pdfe')
+  @UseInterceptors(FileInterceptor('file'))
+  async pdfToPdfe(@UploadedFile() file: MFile, @Res() res: Response) {
+    if (!file) return this.err(res, 400, 'No file uploaded.');
+    this.notImplemented(
+      res,
+      'PDF/E conversion requires a specialised PDF toolkit that can embed 3D content and engineering metadata. ' +
+      'pdf-lib does not support the PDF/E XMP metadata schema required by ISO 24517.',
+    );
+  }
+
+  @Post('pdf-to-pdfua')
+  @UseInterceptors(FileInterceptor('file'))
+  async pdfToPdfua(
+    @UploadedFile() file: MFile,
+    @Body() body: Record<string, string>,
+    @Res() res: Response,
+  ) {
+    if (!file) return this.err(res, 400, 'No file uploaded.');
+    try {
+      const result = await this.svc.pdfToPdfua(
+        file.buffer,
+        body.title ?? '',
+        body.lang  ?? 'en-US',
+      );
+      this.reply(res, result, 'converted_pdfua');
+    } catch (e) {
+      this.err(res, 500, (e as Error).message);
+    }
+  }
+
+  /* ═══════════════════════════════════════════════════════════════════════
+     INTERACTIVE FORMS
+  ═══════════════════════════════════════════════════════════════════════ */
+
+  @Post('create-form')
+  @UseInterceptors(FileInterceptor('file'))
+  async createForm(
+    @UploadedFile() file: MFile,
+    @Body() body: Record<string, string>,
+    @Res() res: Response,
+  ) {
+    if (!file) return this.err(res, 400, 'No file uploaded.');
+    try {
+      const result = await this.svc.createForm(file.buffer, body.fields ?? '[]');
+      this.reply(res, result, 'form');
+    } catch (e) {
+      this.err(res, 500, (e as Error).message);
+    }
+  }
+
+  @Post('fill-form')
+  @UseInterceptors(FileInterceptor('file'))
+  async fillForm(
+    @UploadedFile() file: MFile,
+    @Body() body: Record<string, string>,
+    @Res() res: Response,
+  ) {
+    if (!file) return this.err(res, 400, 'No file uploaded.');
+    try {
+      const result = await this.svc.fillForm(
+        file.buffer,
+        body.data    ?? '{}',
+        body.flatten === 'true',
+      );
+      this.reply(res, result, 'filled');
+    } catch (e) {
+      this.err(res, 500, (e as Error).message);
+    }
+  }
+
+  @Post('export-form-data')
+  @UseInterceptors(FileInterceptor('file'))
+  async exportFormData(
+    @UploadedFile() file: MFile,
+    @Body() body: Record<string, string>,
+    @Res() res: Response,
+  ) {
+    if (!file) return this.err(res, 400, 'No file uploaded.');
+    try {
+      const fmt = (body.format ?? 'json').toLowerCase();
+      const result = await this.svc.exportFormData(file.buffer, fmt);
+      res
+        .status(HttpStatus.OK)
+        .setHeader('Content-Type', result.mime)
+        .setHeader('Content-Disposition', `attachment; filename="form-data.${result.ext}"`)
+        .send(result.buffer);
+    } catch (e) {
+      this.err(res, 500, (e as Error).message);
+    }
+  }
+
+  @Post('validate-form')
+  @UseInterceptors(FileInterceptor('file'))
+  async validateForm(@UploadedFile() file: MFile, @Res() res: Response) {
+    if (!file) return this.err(res, 400, 'No file uploaded.');
+    try {
+      const result = await this.svc.validateForm(file.buffer);
+      res.status(HttpStatus.OK).json(result);
+    } catch (e) {
+      this.err(res, 500, (e as Error).message);
+    }
+  }
+
+  @Post('form-field-management')
+  @UseInterceptors(FileInterceptor('file'))
+  async formFieldManagement(
+    @UploadedFile() file: MFile,
+    @Body() body: Record<string, string>,
+    @Res() res: Response,
+  ) {
+    if (!file) return this.err(res, 400, 'No file uploaded.');
+    try {
+      const action = body.action ?? 'list';
+      if (action === 'list') {
+        const result = await this.svc.listFormFields(file.buffer);
+        return res.status(HttpStatus.OK).json(result);
+      }
+      const result = await this.svc.manageFormField(
+        file.buffer,
+        action,
+        body.field_name     ?? '',
+        body.new_field_name ?? '',
+      );
+      if (result.mime === 'application/json') {
+        return res.status(HttpStatus.OK).json(JSON.parse(result.buffer.toString()));
+      }
+      this.reply(res, result, 'managed');
+    } catch (e) {
+      this.err(res, 500, (e as Error).message);
+    }
+  }
 }
