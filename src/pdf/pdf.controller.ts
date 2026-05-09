@@ -317,7 +317,13 @@ export class PdfController {
   @UseInterceptors(FileInterceptor('file'))
   async cadToPdf(@UploadedFile() file: MFile, @Res() res: Response) {
     if (!file) return this.err(res, 400, 'No file uploaded.');
-    this.notImplemented(res, 'CAD-to-PDF conversion requires LibreCAD, FreeCAD, or a DWG library on the server.');
+    try {
+      const ext    = (file.originalname ?? '').split('.').pop()?.toLowerCase() ?? '';
+      const result = await this.svc.cadToPdf(file.buffer, ext);
+      this.reply(res, result, 'converted');
+    } catch (e) {
+      this.err(res, 500, (e as Error).message);
+    }
   }
 
   /* ═══════════════════════════════════════════════════════════════════════
@@ -326,13 +332,22 @@ export class PdfController {
 
   @Post('pdf-to-image')
   @UseInterceptors(FileInterceptor('file'))
-  async pdfToImage(@UploadedFile() file: MFile, @Res() res: Response) {
+  async pdfToImage(
+    @UploadedFile() file: MFile,
+    @Body() body: Record<string, string>,
+    @Res() res: Response,
+  ) {
     if (!file) return this.err(res, 400, 'No file uploaded.');
-    this.notImplemented(
-      res,
-      'PDF-to-Image requires Ghostscript or Poppler on the server. ' +
-      'Alternatively, install pdf2pic: npm install pdf2pic, which wraps GraphicsMagick/ImageMagick.',
-    );
+    try {
+      const result = await this.svc.pdfToImage(
+        file.buffer,
+        (body.format ?? 'jpg').toLowerCase(),
+        parseInt(body.dpi ?? '150', 10),
+      );
+      this.reply(res, result, 'images');
+    } catch (e) {
+      this.err(res, 500, (e as Error).message);
+    }
   }
 
   @Post('extract')
@@ -366,42 +381,77 @@ export class PdfController {
   @UseInterceptors(FileInterceptor('file'))
   async pdfToEpub(@UploadedFile() file: MFile, @Res() res: Response) {
     if (!file) return this.err(res, 400, 'No file uploaded.');
-    this.notImplemented(res, 'PDF-to-EPUB requires Calibre (ebook-convert) or Pandoc on the server.');
+    try {
+      const title = (file.originalname || 'document').replace(/\.pdf$/i, '');
+      const result = await this.svc.pdfToEpub(file.buffer, title);
+      this.reply(res, result, 'converted');
+    } catch (e) {
+      this.err(res, 500, (e as Error).message);
+    }
   }
 
   @Post('pdf-to-html')
   @UseInterceptors(FileInterceptor('file'))
   async pdfToHtml(@UploadedFile() file: MFile, @Res() res: Response) {
     if (!file) return this.err(res, 400, 'No file uploaded.');
-    this.notImplemented(res, 'PDF-to-HTML requires pdf2htmlEX or pdftohtml (Poppler) on the server.');
+    try {
+      const title = (file.originalname || 'document').replace(/\.pdf$/i, '');
+      const result = await this.svc.pdfToHtml(file.buffer, title);
+      this.reply(res, result, 'converted');
+    } catch (e) {
+      this.err(res, 500, (e as Error).message);
+    }
   }
 
   @Post('pdf-to-csv')
   @UseInterceptors(FileInterceptor('file'))
   async pdfToCsv(@UploadedFile() file: MFile, @Res() res: Response) {
     if (!file) return this.err(res, 400, 'No file uploaded.');
-    this.notImplemented(res, 'PDF-to-CSV requires a table-detection library such as Tabula or Camelot.');
+    try {
+      const result = await this.svc.pdfToCsv(file.buffer);
+      this.reply(res, result, 'converted');
+    } catch (e) {
+      this.err(res, 500, (e as Error).message);
+    }
   }
 
   @Post('pdf-to-xml')
   @UseInterceptors(FileInterceptor('file'))
   async pdfToXml(@UploadedFile() file: MFile, @Res() res: Response) {
     if (!file) return this.err(res, 400, 'No file uploaded.');
-    this.notImplemented(res, 'PDF-to-XML requires pdftohtml (Poppler) with XML output or Apache PDFBox.');
+    try {
+      const title = (file.originalname || 'document').replace(/\.pdf$/i, '');
+      const result = await this.svc.pdfToXml(file.buffer, title);
+      this.reply(res, result, 'converted');
+    } catch (e) {
+      this.err(res, 500, (e as Error).message);
+    }
   }
 
   @Post('pdf-to-word')
   @UseInterceptors(FileInterceptor('file'))
   async pdfToWord(@UploadedFile() file: MFile, @Res() res: Response) {
     if (!file) return this.err(res, 400, 'No file uploaded.');
-    this.notImplemented(res, 'PDF-to-Word conversion requires LibreOffice or a commercial PDF SDK.');
+    try {
+      const title = (file.originalname || 'document').replace(/\.pdf$/i, '');
+      const result = await this.svc.pdfToWord(file.buffer, title);
+      this.reply(res, result, 'converted');
+    } catch (e) {
+      this.err(res, 500, (e as Error).message);
+    }
   }
 
   @Post('pdf-to-excel')
   @UseInterceptors(FileInterceptor('file'))
   async pdfToExcel(@UploadedFile() file: MFile, @Res() res: Response) {
     if (!file) return this.err(res, 400, 'No file uploaded.');
-    this.notImplemented(res, 'PDF-to-Excel conversion requires a table-detection library such as Tabula or Camelot.');
+    try {
+      const title = (file.originalname || 'document').replace(/\.pdf$/i, '');
+      const result = await this.svc.pdfToExcel(file.buffer, title);
+      this.reply(res, result, 'converted');
+    } catch (e) {
+      this.err(res, 500, (e as Error).message);
+    }
   }
 
   /* ═══════════════════════════════════════════════════════════════════════
@@ -458,9 +508,19 @@ export class PdfController {
 
   @Post('ocr')
   @UseInterceptors(FileInterceptor('file'))
-  async ocr(@UploadedFile() file: MFile, @Res() res: Response) {
+  async ocr(
+    @UploadedFile() file: MFile,
+    @Body() body: Record<string, string>,
+    @Res() res: Response,
+  ) {
     if (!file) return this.err(res, 400, 'No file uploaded.');
-    this.notImplemented(res, 'OCR requires Tesseract on the server. Install it and use: npm install tesseract.js');
+    try {
+      const lang   = body.lang ?? 'eng';
+      const result = await this.svc.ocrFile(file.buffer, file.mimetype, lang);
+      this.reply(res, result, 'ocr');
+    } catch (e) {
+      this.err(res, 500, (e as Error).message);
+    }
   }
 
   @Post('add-text-box')
@@ -663,13 +723,19 @@ export class PdfController {
 
   @Post('protect')
   @UseInterceptors(FileInterceptor('file'))
-  async protect(@UploadedFile() file: MFile, @Res() res: Response) {
+  async protect(
+    @UploadedFile() file: MFile,
+    @Body() body: Record<string, string>,
+    @Res() res: Response,
+  ) {
     if (!file) return this.err(res, 400, 'No file uploaded.');
-    this.notImplemented(
-      res,
-      'Password protection requires a PDF encryption library. ' +
-      'Consider qpdf (CLI tool) or a commercial PDF SDK for this feature.',
-    );
+    if (!body.password) return this.err(res, 400, 'password is required in the request body.');
+    try {
+      const result = await this.svc.protect(file.buffer, body.password, body.owner_password);
+      this.reply(res, result, 'protected');
+    } catch (e) {
+      this.err(res, 500, (e as Error).message);
+    }
   }
 
   @Post('unlock')
@@ -689,13 +755,25 @@ export class PdfController {
 
   @Post('set-permissions')
   @UseInterceptors(FileInterceptor('file'))
-  async setPermissions(@UploadedFile() file: MFile, @Res() res: Response) {
+  async setPermissions(
+    @UploadedFile() file: MFile,
+    @Body() body: Record<string, string>,
+    @Res() res: Response,
+  ) {
     if (!file) return this.err(res, 400, 'No file uploaded.');
-    this.notImplemented(
-      res,
-      'Permission-based encryption requires qpdf or a commercial PDF encryption library. ' +
-      'pdf-lib v1.x does not support AES encryption.',
-    );
+    if (!body.owner_password) return this.err(res, 400, 'owner_password is required.');
+    try {
+      const result = await this.svc.setPermissions(file.buffer, body.owner_password, {
+        printing:    body.printing    !== 'false',
+        modifying:   body.modifying   === 'true',
+        copying:     body.copying     === 'true',
+        annotating:  body.annotating  === 'true',
+        fillingForms: body.filling_forms === 'true',
+      });
+      this.reply(res, result, 'permissions-set');
+    } catch (e) {
+      this.err(res, 500, (e as Error).message);
+    }
   }
 
   @Post('redact')
@@ -749,22 +827,41 @@ export class PdfController {
 
   @Post('digital-id')
   @UseInterceptors(FileInterceptor('file'))
-  async digitalId(@UploadedFile() file: MFile, @Res() res: Response) {
-    this.notImplemented(
-      res,
-      'Digital ID creation requires a cryptographic signing library such as node-forge or a commercial PDF SDK.',
-    );
+  async digitalId(
+    @UploadedFile() _file: MFile,
+    @Body() body: Record<string, string>,
+    @Res() res: Response,
+  ) {
+    // Accept either 'name' or 'common_name'; fall back to email
+    const commonName = body.name || body.common_name || body.email;
+    if (!commonName) return this.err(res, 400, 'name is required.');
+    // Auto-generate password if not provided
+    const password = body.password || Math.random().toString(36).slice(2, 10);
+    try {
+      const result = await this.svc.createDigitalId({
+        commonName,
+        organization: body.organization,
+        email:        body.email,
+        country:      body.country,
+        password,
+        validYears:   body.valid_years ? parseInt(body.valid_years) : 3,
+      });
+      this.reply(res, result, 'digital-id');
+    } catch (e) {
+      this.err(res, 500, (e as Error).message);
+    }
   }
 
   @Post('validate-signature')
   @UseInterceptors(FileInterceptor('file'))
   async validateSignature(@UploadedFile() file: MFile, @Res() res: Response) {
     if (!file) return this.err(res, 400, 'No file uploaded.');
-    this.notImplemented(
-      res,
-      'Signature validation requires cryptographic verification libraries. ' +
-      'Consider integrating node-forge or a commercial PDF validation service.',
-    );
+    try {
+      const result = await this.svc.validateSignature(file.buffer);
+      this.reply(res, result, 'validation-report');
+    } catch (e) {
+      this.err(res, 500, (e as Error).message);
+    }
   }
 
   /* ═══════════════════════════════════════════════════════════════════════
@@ -773,9 +870,21 @@ export class PdfController {
 
   @Post('pdf-to-pdfa')
   @UseInterceptors(FileInterceptor('file'))
-  async pdfToPdfa(@UploadedFile() file: MFile, @Res() res: Response) {
+  async pdfToPdfa(
+    @UploadedFile() file: MFile,
+    @Body() body: Record<string, string>,
+    @Res() res: Response,
+  ) {
     if (!file) return this.err(res, 400, 'No file uploaded.');
-    this.notImplemented(res, 'PDF/A conversion requires Ghostscript or a commercial PDF SDK on the server.');
+    try {
+      const conformance = (['A', 'B', 'U'].includes(body.conformance?.toUpperCase())
+        ? body.conformance.toUpperCase()
+        : 'B') as 'A' | 'B' | 'U';
+      const result = await this.svc.pdfToPdfa(file.buffer, conformance);
+      this.reply(res, result, 'pdfa');
+    } catch (e) {
+      this.err(res, 500, (e as Error).message);
+    }
   }
 
   @Post('validate-pdfa')
@@ -792,25 +901,32 @@ export class PdfController {
 
   @Post('pdf-to-pdfx')
   @UseInterceptors(FileInterceptor('file'))
-  async pdfToPdfx(@UploadedFile() file: MFile, @Res() res: Response) {
+  async pdfToPdfx(
+    @UploadedFile() file: MFile,
+    @Body() body: Record<string, string>,
+    @Res() res: Response,
+  ) {
     if (!file) return this.err(res, 400, 'No file uploaded.');
-    this.notImplemented(
-      res,
-      'PDF/X conversion requires Ghostscript or a commercial prepress PDF library. ' +
-      'It involves colour-profile embedding, output-intent metadata, and print-specific constraints ' +
-      'that cannot be applied with pdf-lib alone.',
-    );
+    try {
+      const version = (['1a', '3', '4'].includes(body.version)
+        ? body.version : '3') as '1a' | '3' | '4';
+      const result = await this.svc.pdfToPdfx(file.buffer, version);
+      this.reply(res, result, 'pdfx');
+    } catch (e) {
+      this.err(res, 500, (e as Error).message);
+    }
   }
 
   @Post('pdf-to-pdfe')
   @UseInterceptors(FileInterceptor('file'))
   async pdfToPdfe(@UploadedFile() file: MFile, @Res() res: Response) {
     if (!file) return this.err(res, 400, 'No file uploaded.');
-    this.notImplemented(
-      res,
-      'PDF/E conversion requires a specialised PDF toolkit that can embed 3D content and engineering metadata. ' +
-      'pdf-lib does not support the PDF/E XMP metadata schema required by ISO 24517.',
-    );
+    try {
+      const result = await this.svc.pdfToPdfe(file.buffer);
+      this.reply(res, result, 'pdfe');
+    } catch (e) {
+      this.err(res, 500, (e as Error).message);
+    }
   }
 
   @Post('pdf-to-pdfua')

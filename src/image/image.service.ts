@@ -1,4 +1,5 @@
 import { Injectable, BadRequestException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import sharp from 'sharp';
 
 export interface ImageResult {
@@ -9,6 +10,8 @@ export interface ImageResult {
 
 @Injectable()
 export class ImageService {
+  constructor(private readonly config: ConfigService) {}
+
   /* ─── Helpers ──────────────────────────────────────────────────────────── */
 
   private hexToRgb(hex: string): { r: number; g: number; b: number } {
@@ -29,10 +32,6 @@ export class ImageService {
       .replace(/'/g, '&apos;');
   }
 
-  private n(val: any, fallback: number): number {
-    const v = parseFloat(val);
-    return isNaN(v) ? fallback : v;
-  }
 
   private send(buffer: Buffer, mime: string, ext: string): ImageResult {
     return { buffer, mime, ext };
@@ -383,5 +382,78 @@ export class ImageService {
 
     const out = await pipe.jpeg({ quality: 92 }).toBuffer();
     return this.send(out, 'image/jpeg', 'jpg');
+  }
+
+  async removeBackground(imageBuffer: Buffer): Promise<ImageResult> {
+    const apiKey = this.config.get<string>('REMOVE_BG_API_KEY');
+    if (!apiKey) throw new BadRequestException('REMOVE_BG_API_KEY is not set in environment.');
+
+    // Build multipart form
+    const form = new FormData();
+    const ab = imageBuffer.buffer.slice(
+      imageBuffer.byteOffset,
+      imageBuffer.byteOffset + imageBuffer.byteLength,
+    ) as ArrayBuffer;
+    form.append('image_file', new Blob([ab], { type: 'image/jpeg' }), 'image.jpg');
+    form.append('size', 'auto');
+
+    const response = await fetch('https://api.remove.bg/v1.0/removebg', {
+      method: 'POST',
+      headers: { 'X-Api-Key': apiKey },
+      body: form,
+    });
+
+    if (!response.ok) {
+      const errText = await response.text().catch(() => response.statusText);
+      throw new BadRequestException(`remove.bg API error ${response.status}: ${errText}`);
+    }
+
+    const outBuffer = Buffer.from(await response.arrayBuffer());
+    return this.send(outBuffer, 'image/png', 'png');
+  }
+
+  async htmlToImage(opts: {
+    html?:   string;   // raw HTML string from uploaded file
+    url?:    string;   // public URL to screenshot
+    format:  'png' | 'jpeg' | 'webp';
+    width:   number;
+    height?: number;   // if omitted → full-page height
+    quality: number;   // 1-100, jpeg/webp only
+  }): Promise<ImageResult> {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const puppeteer = require('puppeteer') as typeof import('puppeteer');
+
+    const browser = await puppeteer.launch({
+      headless: true,
+      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-gpu'],
+    });
+
+    try {
+      const page = await browser.newPage();
+      await page.setViewport({ width: opts.width, height: opts.height ?? 768 });
+
+      if (opts.url) {
+        await page.goto(opts.url, { waitUntil: 'networkidle2', timeout: 30000 });
+      } else if (opts.html) {
+        await page.setContent(opts.html, { waitUntil: 'networkidle0' });
+      }
+
+      const screenshotOpts: any = {
+        type:     opts.format,
+        fullPage: !opts.height,  // full-page when no explicit height given
+      };
+      if (opts.format !== 'png') screenshotOpts.quality = opts.quality;
+
+      const imgBuffer = Buffer.from(await page.screenshot(screenshotOpts) as unknown as Uint8Array);
+
+      const mimeMap: Record<string, string> = {
+        png:  'image/png',
+        jpeg: 'image/jpeg',
+        webp: 'image/webp',
+      };
+      return this.send(imgBuffer, mimeMap[opts.format], opts.format);
+    } finally {
+      await browser.close();
+    }
   }
 }

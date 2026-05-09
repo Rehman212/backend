@@ -112,13 +112,21 @@ export class ImageController {
     if (!hasFile && !hasUrl)
       return this.err(res, 400, 'Provide either an HTML file or a URL.');
 
-    /* If Puppeteer is installed, this would work. For now: 501 */
-    this.err(
-      res,
-      501,
-      'HTML-to-Image requires Puppeteer to be installed on the server. ' +
-        'Add `npm install puppeteer` and implement the rendering logic in ImageService.',
-    );
+    try {
+      const format  = (['png', 'jpeg', 'webp'].includes(body.format) ? body.format : 'png') as 'png' | 'jpeg' | 'webp';
+      const width   = Math.max(1, parseInt(body.width  ?? '1280') || 1280);
+      const height  = body.height ? Math.max(1, parseInt(body.height) || 768) : undefined;
+      const quality = Math.min(100, Math.max(1, parseInt(body.quality ?? '90') || 90));
+
+      const result = await this.svc.htmlToImage({
+        html:    hasFile ? file.buffer.toString('utf-8') : undefined,
+        url:     hasUrl  ? body.url.trim()               : undefined,
+        format, width, height, quality,
+      });
+      this.reply(res, result, 'screenshot');
+    } catch (e) {
+      this.err(res, 500, (e as Error).message);
+    }
   }
 
   @Post('convert')
@@ -326,13 +334,12 @@ export class ImageController {
     @Res() res: Response,
   ) {
     if (!file) return this.err(res, 400, 'No file uploaded.');
-    this.err(
-      res,
-      501,
-      'Background removal requires an AI service. ' +
-        'Set REMOVE_BG_API_KEY in your .env and call the remove.bg API, ' +
-        'or install a local model such as `rembg`.',
-    );
+    try {
+      const result = await this.svc.removeBackground(file.buffer);
+      this.reply(res, result, 'bg-removed');
+    } catch (e) {
+      this.err(res, 500, (e as Error).message);
+    }
   }
 
   @Post('watermark')
