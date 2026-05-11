@@ -1,35 +1,46 @@
 import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
-
-// Demo users — replace with a real DB/user service later
-const USERS = [
-  { id: 1, username: 'admin', password: 'password123' },
-  { id: 2, username: 'alice', password: 'alice123' },
-];
+import * as bcrypt from 'bcrypt';
+import { UsersService } from '../users/users.service';
 
 @Injectable()
 export class AuthService {
   constructor(
-    private jwtService: JwtService,
-    private config: ConfigService,
+    private readonly jwtService: JwtService,
+    private readonly config: ConfigService,
+    private readonly usersService: UsersService,
   ) {}
 
-  login(username: string, password: string) {
-    const user = USERS.find(
-      (u) => u.username === username && u.password === password,
-    );
+  async signup(email: string, username: string, password: string) {
+    const user = await this.usersService.create(email, username, password);
+    return {
+      ...this.generateTokens(user.id, user.username),
+      user: { id: user.id, email: user.email, username: user.username },
+    };
+  }
+
+  async login(emailOrUsername: string, password: string) {
+    const user = await this.usersService.findByEmailOrUsername(emailOrUsername);
     if (!user) throw new UnauthorizedException('Invalid credentials');
 
-    const payload = { username: user.username, sub: user.id };
+    const match = await bcrypt.compare(password, user.password);
+    if (!match) throw new UnauthorizedException('Invalid credentials');
 
-    const access_token = this.jwtService.sign(payload);
+    return {
+      ...this.generateTokens(user.id, user.username),
+      user: { id: user.id, email: user.email, username: user.username },
+    };
+  }
 
-    const refresh_token = this.jwtService.sign(payload, {
-      secret: this.config.get<string>('REFRESH_TOKEN_SECRET'),
-      expiresIn: this.config.get('JWT_REFRESH_EXPIRATION') as any,
-    });
-
-    return { access_token, refresh_token };
+  private generateTokens(userId: number, username: string) {
+    const payload = { username, sub: userId };
+    return {
+      access_token: this.jwtService.sign(payload),
+      refresh_token: this.jwtService.sign(payload, {
+        secret: this.config.get<string>('REFRESH_TOKEN_SECRET'),
+        expiresIn: this.config.get('JWT_REFRESH_EXPIRATION') as any,
+      }),
+    };
   }
 }
