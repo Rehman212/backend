@@ -33,4 +33,29 @@ export class UsersService {
     const user = this.repo.create({ email, username, password });
     return this.repo.save(user);
   }
+
+  async findOrCreateGoogleUser(googleId: string, email: string, displayName: string): Promise<User> {
+    // 1. Already linked to this Google account
+    let user = await this.repo.findOne({ where: { googleId } });
+    if (user) return user;
+
+    // 2. Existing account with same email → link it
+    user = await this.repo.findOne({ where: { email } });
+    if (user) {
+      user.googleId = googleId;
+      return this.repo.save(user);
+    }
+
+    // 3. Brand new user — derive a unique username from displayName
+    const base = displayName.replace(/\s+/g, '').toLowerCase().slice(0, 20) || 'user';
+    let username = base;
+    let attempt = 0;
+    while (await this.repo.findOne({ where: { username } })) {
+      attempt++;
+      username = `${base}${attempt}`;
+    }
+
+    const newUser = this.repo.create({ email, username, googleId });
+    return this.repo.save(newUser);
+  }
 }

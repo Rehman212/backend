@@ -23,10 +23,18 @@ export class AuthService {
   async login(emailOrUsername: string, password: string) {
     const user = await this.usersService.findByEmailOrUsername(emailOrUsername);
     if (!user) throw new UnauthorizedException('Invalid credentials');
+    if (!user.password) throw new UnauthorizedException('This account uses Google sign-in. Please use "Continue with Google".');
 
     const match = await bcrypt.compare(password, user.password);
     if (!match) throw new UnauthorizedException('Invalid credentials');
 
+    return {
+      ...this.generateTokens(user.id, user.username),
+      user: { id: user.id, email: user.email, username: user.username },
+    };
+  }
+
+  loginWithGoogle(user: { id: number; email: string; username: string }) {
     return {
       ...this.generateTokens(user.id, user.username),
       user: { id: user.id, email: user.email, username: user.username },
