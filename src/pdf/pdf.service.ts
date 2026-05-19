@@ -2085,7 +2085,7 @@ export class PdfService {
     switch (ext) {
       case 'docx':
       case 'doc':
-        return this.wordToPdf(buffer);
+        return this.wordToPdf(buffer, ext);
       case 'xlsx':
       case 'xls':
         return this.excelToPdf(buffer);
@@ -2101,11 +2101,82 @@ export class PdfService {
     }
   }
 
-  /** DOCX / DOC → PDF via mammoth text extraction. */
-  private async wordToPdf(buffer: Buffer): Promise<PdfResult> {
-    const { value: text } = await mammoth.extractRawText({ buffer });
-    const doc = await this.renderTextAsPdf(text || '(Empty document)', 'Word Document');
-    return { buffer: this.toBuffer(await doc.save()), mime: 'application/pdf', ext: 'pdf' };
+  /** DOCX / DOC → PDF via iLovePDF API (preserves full formatting). */
+  private async wordToPdf(buffer: Buffer, ext = 'docx'): Promise<PdfResult> {
+    const publicKey = process.env.ILOVEPDF_PUBLIC_KEY;
+    if (!publicKey) throw new Error('ILOVEPDF_PUBLIC_KEY not set in environment');
+
+    const filename = `document.${ext}`;
+    const mime =
+      ext === 'docx'
+        ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+        : 'application/msword';
+
+    // 1. Authenticate → get JWT token
+    const authRes = await fetch('https://api.ilovepdf.com/v1/auth', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ public_key: publicKey }),
+    });
+    if (!authRes.ok) throw new Error(`iLovePDF auth failed: ${await authRes.text()}`);
+    const { token } = (await authRes.json()) as { token: string };
+
+    // 2. Start task → get server + task id
+    const startRes = await fetch('https://api.ilovepdf.com/v1/start/officepdf', {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!startRes.ok) throw new Error(`iLovePDF start failed: ${await startRes.text()}`);
+    const { server, task } = (await startRes.json()) as { server: string; task: string };
+
+    // 3. Upload file — copy into a plain ArrayBuffer so Blob accepts it
+    const ab = new ArrayBuffer(buffer.byteLength);
+    new Uint8Array(ab).set(buffer);
+    const uploadForm = new FormData();
+    uploadForm.append('task', task);
+    uploadForm.append('file', new Blob([ab], { type: mime }), filename);
+    const uploadRes = await fetch(`https://${server}/v1/upload`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+      body: uploadForm,
+    });
+    if (!uploadRes.ok) throw new Error(`iLovePDF upload failed: ${await uploadRes.text()}`);
+    const { server_filename } = (await uploadRes.json()) as { server_filename: string };
+
+    // 4. Process (convert)
+    const processRes = await fetch(`https://${server}/v1/process`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        task,
+        tool: 'officepdf',
+        files: [{ server_filename, filename }],
+      }),
+    });
+    if (!processRes.ok) throw new Error(`iLovePDF process failed: ${await processRes.text()}`);
+
+    // 5. Download result
+    const dlRes = await fetch(`https://${server}/v1/download/${task}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!dlRes.ok) throw new Error(`iLovePDF download failed: ${await dlRes.text()}`);
+
+    const contentType = dlRes.headers.get('content-type') ?? '';
+    const rawBuffer = Buffer.from(await dlRes.arrayBuffer());
+
+    // iLovePDF returns a ZIP for batch jobs, direct PDF for single-file jobs
+    if (contentType.includes('zip') || contentType.includes('octet-stream')) {
+      try {
+        const zip = await JSZip.loadAsync(rawBuffer);
+        const pdfEntry = Object.values(zip.files).find((f) => f.name.endsWith('.pdf'));
+        if (pdfEntry) {
+          return { buffer: Buffer.from(await pdfEntry.async('arraybuffer')), mime: 'application/pdf', ext: 'pdf' };
+        }
+      } catch {
+        // not a zip — fall through and return as-is
+      }
+    }
+
+    return { buffer: rawBuffer, mime: 'application/pdf', ext: 'pdf' };
   }
 
   /** XLSX / XLS → PDF — renders each sheet as a columnar text table. */
