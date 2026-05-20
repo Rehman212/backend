@@ -2760,12 +2760,22 @@ export class PdfService {
    * Remove Watermark from PDF
    * Strategy:
    *   1. Render each page to PNG at 150 DPI using pdfjs-dist + canvas
-   *   2. Apply sharp blur-blend to suppress semi-transparent overlays
+   *   2. Linear stretch: pixels above `threshold` are pushed to white (255).
+   *      Dark content text (0-100) is barely affected; semi-transparent
+   *      watermarks (typically 130-220 on white background) get lifted to white.
+   *      strength 30 → threshold 198  (light watermarks only)
+   *      strength 60 → threshold 174  (standard watermarks)
+   *      strength 85 → threshold 154  (heavy/dark watermarks)
    *   3. Rebuild a new PDF from the cleaned page images via pdf-lib
    * ─────────────────────────────────────────────────────────────────────── */
   async removePdfWatermark(buffer: Buffer, strength = 60): Promise<PdfResult> {
     const pct = Math.max(10, Math.min(100, strength)) / 100;
     const scale = 150 / 72; // 150 DPI
+
+    // Pixels above this value get pushed toward/to white.
+    // Content text is typically < 100, watermarks typically 130-230.
+    const threshold = Math.round(210 - pct * 60); // 210 at 0%, 150 at 100%
+    const linearA   = 255 / threshold;             // multiply so threshold maps to 255
 
     const pdfjsLib = require('pdfjs-dist/legacy/build/pdf.js') as any;
     const { createCanvas } = require('canvas') as { createCanvas: (w: number, h: number) => any };
@@ -2783,30 +2793,34 @@ export class PdfService {
 
       const canvas  = createCanvas(w, h);
       const context = canvas.getContext('2d');
+      // Fill white so transparent PDF areas don't render as dark/black
+      context.fillStyle = '#ffffff';
+      context.fillRect(0, 0, w, h);
 
       const canvasFactory = {
-        create:  (cw: number, ch: number) => { const c = createCanvas(cw, ch); return { canvas: c, context: c.getContext('2d') }; },
-        reset:   (pair: any, cw: number, ch: number) => { pair.canvas.width = cw; pair.canvas.height = ch; },
+        create:  (cw: number, ch: number) => {
+          const c = createCanvas(cw, ch);
+          const ctx = c.getContext('2d');
+          ctx.fillStyle = '#ffffff';
+          ctx.fillRect(0, 0, cw, ch);
+          return { canvas: c, context: ctx };
+        },
+        reset:   (pair: any, cw: number, ch: number) => {
+          pair.canvas.width = cw;
+          pair.canvas.height = ch;
+          pair.context.fillStyle = '#ffffff';
+          pair.context.fillRect(0, 0, cw, ch);
+        },
         destroy: (pair: any) => { pair.canvas.width = 0; pair.canvas.height = 0; },
       };
 
       await page.render({ canvasContext: context, viewport, canvasFactory }).promise;
       const pageImgBuf = canvas.toBuffer('image/png');
 
-      // Blur-blend to suppress semi-transparent watermark overlays
-      const blurSigma = Math.max(5, Math.round(Math.min(w, h) * 0.03));
-      const orig  = await (sharp as any)(pageImgBuf).ensureAlpha(1).raw().toBuffer({ resolveWithObject: true });
-      const bgRaw = await (sharp as any)(pageImgBuf).blur(blurSigma).ensureAlpha(1).raw().toBuffer();
-
-      const blendBuf = Buffer.alloc(orig.data.length);
-      for (let px = 0; px < orig.data.length; px++) {
-        blendBuf[px] = Math.round(orig.data[px] * (1 - pct) + bgRaw[px] * pct);
-      }
-
-      const cleaned = await (sharp as any)(blendBuf, {
-        raw: { width: w, height: h, channels: orig.info.channels as number },
-      })
-        .normalise()
+      // Linear stretch: output = linearA * input (clamped 0-255)
+      // Pixels above threshold → white; dark text (< ~100) → stays dark
+      const cleaned = await (sharp as any)(pageImgBuf)
+        .linear(linearA, 0)
         .sharpen({ sigma: 0.5 })
         .png()
         .toBuffer();
