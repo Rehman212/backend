@@ -1106,4 +1106,21 @@ export class PdfController {
       this.err(res, 500, (e as Error).message);
     }
   }
+
+  @Post('remove-watermark')
+  @UseInterceptors(FileInterceptor('file'))
+  async removePdfWatermark(
+    @UploadedFile() file: MFile,
+    @Body() body: Record<string, string>,
+    @Res() res: Response,
+  ) {
+    if (!file) return this.err(res, 400, 'No file uploaded.');
+    try {
+      const strength = parseInt(body.strength ?? '60', 10);
+      const result   = await this.svc.removePdfWatermark(file.buffer, strength);
+      this.reply(res, result, 'cleaned');
+    } catch (e) {
+      this.err(res, 500, (e as Error).message);
+    }
+  }
 }

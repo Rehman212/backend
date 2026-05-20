@@ -2755,4 +2755,74 @@ export class PdfService {
     const pdfBytes = await outDoc.save();
     return { buffer: this.toBuffer(pdfBytes), mime: 'application/pdf', ext: 'pdf' };
   }
+
+  /* ─────────────────────────────────────────────────────────────────────────
+   * Remove Watermark from PDF
+   * Strategy:
+   *   1. Render each page to PNG at 150 DPI using pdfjs-dist + canvas
+   *   2. Apply sharp blur-blend to suppress semi-transparent overlays
+   *   3. Rebuild a new PDF from the cleaned page images via pdf-lib
+   * ─────────────────────────────────────────────────────────────────────── */
+  async removePdfWatermark(buffer: Buffer, strength = 60): Promise<PdfResult> {
+    const pct = Math.max(10, Math.min(100, strength)) / 100;
+    const scale = 150 / 72; // 150 DPI
+
+    const pdfjsLib = require('pdfjs-dist/legacy/build/pdf.js') as any;
+    const { createCanvas } = require('canvas') as { createCanvas: (w: number, h: number) => any };
+    pdfjsLib.GlobalWorkerOptions.workerSrc = '';
+
+    const pdfDoc = await pdfjsLib.getDocument({ data: new Uint8Array(buffer), verbosity: 0 }).promise;
+    const pageCount: number = pdfDoc.numPages;
+    const cleanedImages: Buffer[] = [];
+
+    for (let i = 1; i <= pageCount; i++) {
+      const page     = await pdfDoc.getPage(i);
+      const viewport = page.getViewport({ scale });
+      const w = Math.round(viewport.width);
+      const h = Math.round(viewport.height);
+
+      const canvas  = createCanvas(w, h);
+      const context = canvas.getContext('2d');
+
+      const canvasFactory = {
+        create:  (cw: number, ch: number) => { const c = createCanvas(cw, ch); return { canvas: c, context: c.getContext('2d') }; },
+        reset:   (pair: any, cw: number, ch: number) => { pair.canvas.width = cw; pair.canvas.height = ch; },
+        destroy: (pair: any) => { pair.canvas.width = 0; pair.canvas.height = 0; },
+      };
+
+      await page.render({ canvasContext: context, viewport, canvasFactory }).promise;
+      const pageImgBuf = canvas.toBuffer('image/png');
+
+      // Blur-blend to suppress semi-transparent watermark overlays
+      const blurSigma = Math.max(5, Math.round(Math.min(w, h) * 0.03));
+      const orig  = await (sharp as any)(pageImgBuf).ensureAlpha(1).raw().toBuffer({ resolveWithObject: true });
+      const bgRaw = await (sharp as any)(pageImgBuf).blur(blurSigma).ensureAlpha(1).raw().toBuffer();
+
+      const blendBuf = Buffer.alloc(orig.data.length);
+      for (let px = 0; px < orig.data.length; px++) {
+        blendBuf[px] = Math.round(orig.data[px] * (1 - pct) + bgRaw[px] * pct);
+      }
+
+      const cleaned = await (sharp as any)(blendBuf, {
+        raw: { width: w, height: h, channels: orig.info.channels as number },
+      })
+        .normalise()
+        .sharpen({ sigma: 0.5 })
+        .png()
+        .toBuffer();
+
+      cleanedImages.push(cleaned);
+    }
+
+    // Rebuild PDF from cleaned images
+    const outDoc = await PDFDocument.create();
+    for (const imgBuf of cleanedImages) {
+      const pngImage = await outDoc.embedPng(imgBuf);
+      const pg = outDoc.addPage([pngImage.width, pngImage.height]);
+      pg.drawImage(pngImage, { x: 0, y: 0, width: pngImage.width, height: pngImage.height });
+    }
+
+    const pdfBytes = await outDoc.save();
+    return { buffer: this.toBuffer(pdfBytes), mime: 'application/pdf', ext: 'pdf' };
+  }
 }
