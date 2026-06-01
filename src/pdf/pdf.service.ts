@@ -121,13 +121,22 @@ export class PdfService {
   }
 
   async selectiveMerge(buffers: Buffer[], pageRangesStr: string): Promise<PdfResult> {
+    // page_ranges uses "|" to separate per-file ranges, e.g. "1-3 | 2,4 | 1"
+    // If only one group given, apply it to every file.
+    const perFileRanges = (pageRangesStr ?? '')
+      .split('|')
+      .map(s => s.trim())
+      .filter(Boolean);
+
     const merged = await PDFDocument.create();
-    for (const buf of buffers) {
-      const doc = await PDFDocument.load(buf, { ignoreEncryption: true });
+    for (let fi = 0; fi < buffers.length; fi++) {
+      const doc   = await PDFDocument.load(buffers[fi], { ignoreEncryption: true });
       const total = doc.getPageCount();
-      const indices = !pageRangesStr?.trim()
+      // Use file-specific range if provided; fall back to first range; fall back to all pages
+      const rangeStr = perFileRanges[fi] ?? perFileRanges[0] ?? '';
+      const indices  = !rangeStr
         ? Array.from({ length: total }, (_, i) => i)
-        : this.parseRanges(pageRangesStr, total).flat();
+        : this.parseRanges(rangeStr, total).flat();
       const pages = await merged.copyPages(doc, indices);
       pages.forEach(p => merged.addPage(p));
     }
@@ -2088,7 +2097,7 @@ export class PdfService {
         return this.wordToPdf(buffer, ext);
       case 'xlsx':
       case 'xls':
-        return this.excelToPdf(buffer);
+        return this.excelToPdf(buffer, ext);
       case 'pptx':
       case 'ppt':
         return this.pptToPdf(buffer);
@@ -2180,22 +2189,81 @@ export class PdfService {
   }
 
   /** XLSX / XLS → PDF — renders each sheet as a columnar text table. */
-  private async excelToPdf(buffer: Buffer): Promise<PdfResult> {
-    const wb = XLSX.read(buffer, { type: 'buffer' });
-    let text = '';
-    for (const sheetName of wb.SheetNames) {
-      text += `Sheet: ${sheetName}\n${'─'.repeat(50)}\n`;
-      const rows = XLSX.utils.sheet_to_json<string[]>(wb.Sheets[sheetName], {
-        header: 1,
-        defval: '',
-      });
-      for (const row of rows) {
-        text += (row as string[]).map(c => String(c ?? '').padEnd(18)).join('  ').trimEnd() + '\n';
+  /** XLSX / XLS → PDF via iLovePDF officepdf task (preserves formatting). */
+  private async excelToPdf(buffer: Buffer, ext = 'xlsx'): Promise<PdfResult> {
+    const publicKey = process.env.ILOVEPDF_PUBLIC_KEY;
+    if (!publicKey) throw new Error('ILOVEPDF_PUBLIC_KEY not set in environment');
+
+    const filename = `spreadsheet.${ext}`;
+    const mime =
+      ext === 'xlsx'
+        ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        : 'application/vnd.ms-excel';
+
+    // 1. Auth
+    const authRes = await fetch('https://api.ilovepdf.com/v1/auth', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ public_key: publicKey }),
+    });
+    if (!authRes.ok) throw new Error(`iLovePDF auth failed: ${await authRes.text()}`);
+    const { token } = (await authRes.json()) as { token: string };
+
+    // 2. Start task
+    const startRes = await fetch('https://api.ilovepdf.com/v1/start/officepdf', {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!startRes.ok) throw new Error(`iLovePDF start failed: ${await startRes.text()}`);
+    const { server, task } = (await startRes.json()) as { server: string; task: string };
+
+    // 3. Upload
+    const ab = new ArrayBuffer(buffer.byteLength);
+    new Uint8Array(ab).set(buffer);
+    const uploadForm = new FormData();
+    uploadForm.append('task', task);
+    uploadForm.append('file', new Blob([ab], { type: mime }), filename);
+    const uploadRes = await fetch(`https://${server}/v1/upload`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+      body: uploadForm,
+    });
+    if (!uploadRes.ok) throw new Error(`iLovePDF upload failed: ${await uploadRes.text()}`);
+    const { server_filename } = (await uploadRes.json()) as { server_filename: string };
+
+    // 4. Process
+    const processRes = await fetch(`https://${server}/v1/process`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        task,
+        tool: 'officepdf',
+        files: [{ server_filename, filename }],
+      }),
+    });
+    if (!processRes.ok) throw new Error(`iLovePDF process failed: ${await processRes.text()}`);
+
+    // 5. Download
+    const dlRes = await fetch(`https://${server}/v1/download/${task}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!dlRes.ok) throw new Error(`iLovePDF download failed: ${await dlRes.text()}`);
+
+    const contentType = dlRes.headers.get('content-type') ?? '';
+    const rawBuffer = Buffer.from(await dlRes.arrayBuffer());
+
+    if (contentType.includes('zip') || contentType.includes('octet-stream')) {
+      try {
+        const zip = await JSZip.loadAsync(rawBuffer);
+        const pdfEntry = Object.values(zip.files).find(f => f.name.endsWith('.pdf'));
+        if (pdfEntry) {
+          return { buffer: Buffer.from(await pdfEntry.async('arraybuffer')), mime: 'application/pdf', ext: 'pdf' };
+        }
+      } catch {
+        // not a zip — fall through
       }
-      text += '\n';
     }
-    const doc = await this.renderTextAsPdf(text || '(Empty spreadsheet)', 'Spreadsheet');
-    return { buffer: this.toBuffer(await doc.save()), mime: 'application/pdf', ext: 'pdf' };
+
+    return { buffer: rawBuffer, mime: 'application/pdf', ext: 'pdf' };
   }
 
   /** PPTX / PPT → PDF — extracts text from slide XML using JSZip. */
