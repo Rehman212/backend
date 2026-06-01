@@ -558,6 +558,32 @@ export class PdfController {
     }
   }
 
+  @Post('edit-pdf')
+  @UseInterceptors(FileInterceptor('file'))
+  async editPdf(
+    @UploadedFile() file: MFile,
+    @Body() body: Record<string, string>,
+    @Res() res: Response,
+  ) {
+    if (!file) return this.err(res, 400, 'No file uploaded.');
+    try {
+      const result = await this.svc.addTextBox(
+        file.buffer,
+        body.text       ?? '',
+        body.pages      ?? '1',
+        parseFloat(body.x          ?? '100'),
+        parseFloat(body.y          ?? '100'),
+        parseInt(body.font_size    ?? '14',  10),
+        body.font_color ?? '#000000',
+        parseFloat(body.opacity    ?? '100'),
+        parseFloat(body.rotation   ?? '0'),
+      );
+      this.reply(res, result, this.baseName(file.originalname));
+    } catch (e) {
+      this.err(res, 500, (e as Error).message);
+    }
+  }
+
   @Post('sticky-note')
   @UseInterceptors(FileInterceptor('file'))
   async stickyNote(
