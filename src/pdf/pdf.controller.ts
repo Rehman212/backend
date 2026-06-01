@@ -27,6 +27,15 @@ export class PdfController {
   constructor(private readonly svc: PdfService) {}
 
   /* ── helpers ──────────────────────────────────────────────────────────── */
+
+  /** Strip extension from an uploaded filename and sanitise for Content-Disposition. */
+  private baseName(originalname: string | undefined, fallback = 'file'): string {
+    return (originalname ?? '')
+      .replace(/\.[^.]+$/, '')          // remove extension
+      .replace(/["/\\<>|?*:]/g, '_')    // replace unsafe chars
+      .trim() || fallback;
+  }
+
   private reply(res: Response, r: PdfResult, filename: string): void {
     res.set({
       'Content-Type': r.mime,
@@ -55,7 +64,7 @@ export class PdfController {
     if (!files?.length) return this.err(res, 400, 'No files uploaded.');
     try {
       const result = await this.svc.merge(files.map(f => f.buffer));
-      this.reply(res, result, 'merged');
+      this.reply(res, result, this.baseName(files[0].originalname));
     } catch (e) {
       this.err(res, 500, (e as Error).message);
     }
@@ -76,7 +85,7 @@ export class PdfController {
         body.ranges       ?? '1-999',
         parseInt(body.fixed_range ?? '1', 10),
       );
-      this.reply(res, result, 'split');
+      this.reply(res, result, this.baseName(file.originalname));
     } catch (e) {
       this.err(res, 500, (e as Error).message);
     }
@@ -92,7 +101,7 @@ export class PdfController {
     if (!files?.length) return this.err(res, 400, 'No files uploaded.');
     try {
       const result = await this.svc.selectiveMerge(files.map(f => f.buffer), body.page_ranges ?? '');
-      this.reply(res, result, 'merged');
+      this.reply(res, result, this.baseName(files[0].originalname));
     } catch (e) {
       this.err(res, 500, (e as Error).message);
     }
@@ -108,7 +117,7 @@ export class PdfController {
     if (!file) return this.err(res, 400, 'No file uploaded.');
     try {
       const result = await this.svc.splitBySize(file.buffer, parseFloat(body.max_size_mb ?? '5'));
-      this.reply(res, result, 'split');
+      this.reply(res, result, this.baseName(file.originalname));
     } catch (e) {
       this.err(res, 500, (e as Error).message);
     }
@@ -124,7 +133,7 @@ export class PdfController {
     if (!file) return this.err(res, 400, 'No file uploaded.');
     try {
       const result = await this.svc.splitByBookmark(file.buffer, body.bookmark_level ?? '1');
-      this.reply(res, result, 'split');
+      this.reply(res, result, this.baseName(file.originalname));
     } catch (e) {
       this.err(res, 500, (e as Error).message);
     }
@@ -140,7 +149,7 @@ export class PdfController {
     if (!file) return this.err(res, 400, 'No file uploaded.');
     try {
       const result = await this.svc.deletePages(file.buffer, body.pages ?? '');
-      this.reply(res, result, 'output');
+      this.reply(res, result, this.baseName(file.originalname));
     } catch (e) {
       this.err(res, 500, (e as Error).message);
     }
@@ -160,7 +169,7 @@ export class PdfController {
         body.pages ?? 'all',
         parseInt(body.rotation ?? '90', 10),
       );
-      this.reply(res, result, 'rotated');
+      this.reply(res, result, this.baseName(file.originalname));
     } catch (e) {
       this.err(res, 500, (e as Error).message);
     }
@@ -176,7 +185,7 @@ export class PdfController {
     if (!file) return this.err(res, 400, 'No file uploaded.');
     try {
       const result = await this.svc.reorderPages(file.buffer, body.order ?? '');
-      this.reply(res, result, 'reordered');
+      this.reply(res, result, this.baseName(file.originalname));
     } catch (e) {
       this.err(res, 500, (e as Error).message);
     }
@@ -192,7 +201,7 @@ export class PdfController {
     if (!file) return this.err(res, 400, 'No file uploaded.');
     try {
       const result = await this.svc.extractPageRange(file.buffer, body.pages ?? '1-999');
-      this.reply(res, result, 'extracted');
+      this.reply(res, result, this.baseName(file.originalname));
     } catch (e) {
       this.err(res, 500, (e as Error).message);
     }
@@ -204,7 +213,7 @@ export class PdfController {
     if (!file) return this.err(res, 400, 'No file uploaded.');
     try {
       const result = await this.svc.reversePages(file.buffer);
-      this.reply(res, result, 'reversed');
+      this.reply(res, result, this.baseName(file.originalname));
     } catch (e) {
       this.err(res, 500, (e as Error).message);
     }
@@ -224,7 +233,7 @@ export class PdfController {
     if (!file) return this.err(res, 400, 'No file uploaded.');
     try {
       const result = await this.svc.compress(file.buffer, body.compression_level ?? 'recommended');
-      this.reply(res, result, 'compressed');
+      this.reply(res, result, this.baseName(file.originalname));
     } catch (e) {
       this.err(res, 500, (e as Error).message);
     }
@@ -240,7 +249,7 @@ export class PdfController {
     if (!file) return this.err(res, 400, 'No file uploaded.');
     try {
       const result = await this.svc.rotate(file.buffer, parseInt(body.rotation ?? '90', 10));
-      this.reply(res, result, 'rotated');
+      this.reply(res, result, this.baseName(file.originalname));
     } catch (e) {
       this.err(res, 500, (e as Error).message);
     }
@@ -251,7 +260,7 @@ export class PdfController {
   async repair(@UploadedFile() file: MFile, @Res() res: Response) {
     if (!file) return this.err(res, 400, 'No file uploaded.');
     try {
-      this.reply(res, await this.svc.repair(file.buffer), 'repaired');
+      this.reply(res, await this.svc.repair(file.buffer), this.baseName(file.originalname));
     } catch (e) {
       this.err(res, 500, (e as Error).message);
     }
@@ -268,7 +277,7 @@ export class PdfController {
     try {
       const ext    = (file.originalname ?? '').split('.').pop()?.toLowerCase() ?? '';
       const result = await this.svc.officeToPdf(file.buffer, ext);
-      this.reply(res, result, 'converted');
+      this.reply(res, result, this.baseName(file.originalname));
     } catch (e) {
       this.err(res, 500, (e as Error).message);
     }
@@ -283,7 +292,7 @@ export class PdfController {
         files.map(f => f.buffer),
         files.map(f => f.mimetype),
       );
-      this.reply(res, result, 'converted');
+      this.reply(res, result, this.baseName(files[0].originalname));
     } catch (e) {
       this.err(res, 500, (e as Error).message);
     }
@@ -295,7 +304,7 @@ export class PdfController {
     if (!file) return this.err(res, 400, 'No file uploaded.');
     try {
       const result = await this.svc.htmlToPdf(file.buffer);
-      this.reply(res, result, 'converted');
+      this.reply(res, result, this.baseName(file.originalname));
     } catch (e) {
       this.err(res, 500, (e as Error).message);
     }
@@ -307,7 +316,7 @@ export class PdfController {
     if (!file) return this.err(res, 400, 'No file uploaded.');
     try {
       const result = await this.svc.epubToPdf(file.buffer);
-      this.reply(res, result, 'converted');
+      this.reply(res, result, this.baseName(file.originalname));
     } catch (e) {
       this.err(res, 500, (e as Error).message);
     }
@@ -320,7 +329,7 @@ export class PdfController {
     try {
       const ext    = (file.originalname ?? '').split('.').pop()?.toLowerCase() ?? '';
       const result = await this.svc.cadToPdf(file.buffer, ext);
-      this.reply(res, result, 'converted');
+      this.reply(res, result, this.baseName(file.originalname));
     } catch (e) {
       this.err(res, 500, (e as Error).message);
     }
@@ -344,7 +353,7 @@ export class PdfController {
         (body.format ?? 'jpg').toLowerCase(),
         parseInt(body.dpi ?? '150', 10),
       );
-      this.reply(res, result, 'images');
+      this.reply(res, result, this.baseName(file.originalname));
     } catch (e) {
       this.err(res, 500, (e as Error).message);
     }
@@ -360,7 +369,7 @@ export class PdfController {
     if (!file) return this.err(res, 400, 'No file uploaded.');
     try {
       const result = await this.svc.extractPages(file.buffer, body.mode ?? 'pages');
-      this.reply(res, result, 'extracted');
+      this.reply(res, result, this.baseName(file.originalname));
     } catch (e) {
       this.err(res, 500, (e as Error).message);
     }
@@ -371,7 +380,7 @@ export class PdfController {
   async pdfToText(@UploadedFile() file: MFile, @Res() res: Response) {
     if (!file) return this.err(res, 400, 'No file uploaded.');
     try {
-      this.reply(res, await this.svc.pdfToText(file.buffer), 'converted');
+      this.reply(res, await this.svc.pdfToText(file.buffer), this.baseName(file.originalname));
     } catch (e) {
       this.err(res, 500, (e as Error).message);
     }
@@ -384,7 +393,7 @@ export class PdfController {
     try {
       const title = (file.originalname || 'document').replace(/\.pdf$/i, '');
       const result = await this.svc.pdfToEpub(file.buffer, title);
-      this.reply(res, result, 'converted');
+      this.reply(res, result, this.baseName(file.originalname));
     } catch (e) {
       this.err(res, 500, (e as Error).message);
     }
@@ -397,7 +406,7 @@ export class PdfController {
     try {
       const title = (file.originalname || 'document').replace(/\.pdf$/i, '');
       const result = await this.svc.pdfToHtml(file.buffer, title);
-      this.reply(res, result, 'converted');
+      this.reply(res, result, this.baseName(file.originalname));
     } catch (e) {
       this.err(res, 500, (e as Error).message);
     }
@@ -409,7 +418,7 @@ export class PdfController {
     if (!file) return this.err(res, 400, 'No file uploaded.');
     try {
       const result = await this.svc.pdfToCsv(file.buffer);
-      this.reply(res, result, 'converted');
+      this.reply(res, result, this.baseName(file.originalname));
     } catch (e) {
       this.err(res, 500, (e as Error).message);
     }
@@ -422,7 +431,7 @@ export class PdfController {
     try {
       const title = (file.originalname || 'document').replace(/\.pdf$/i, '');
       const result = await this.svc.pdfToXml(file.buffer, title);
-      this.reply(res, result, 'converted');
+      this.reply(res, result, this.baseName(file.originalname));
     } catch (e) {
       this.err(res, 500, (e as Error).message);
     }
@@ -435,7 +444,7 @@ export class PdfController {
     try {
       const title = (file.originalname || 'document').replace(/\.pdf$/i, '');
       const result = await this.svc.pdfToWord(file.buffer, title);
-      this.reply(res, result, 'converted');
+      this.reply(res, result, this.baseName(file.originalname));
     } catch (e) {
       this.err(res, 500, (e as Error).message);
     }
@@ -448,7 +457,7 @@ export class PdfController {
     try {
       const title = (file.originalname || 'document').replace(/\.pdf$/i, '');
       const result = await this.svc.pdfToExcel(file.buffer, title);
-      this.reply(res, result, 'converted');
+      this.reply(res, result, this.baseName(file.originalname));
     } catch (e) {
       this.err(res, 500, (e as Error).message);
     }
@@ -477,7 +486,7 @@ export class PdfController {
         parseInt(body.rotation     ?? '315', 10),
         body.font_color ?? '#FF0000',
       );
-      this.reply(res, result, 'watermarked');
+      this.reply(res, result, this.baseName(file.originalname));
     } catch (e) {
       this.err(res, 500, (e as Error).message);
     }
@@ -500,7 +509,7 @@ export class PdfController {
         parseInt(body.font_size            ?? '12',      10),
         body.font_color                    ?? '#000000',
       );
-      this.reply(res, result, 'numbered');
+      this.reply(res, result, this.baseName(file.originalname));
     } catch (e) {
       this.err(res, 500, (e as Error).message);
     }
@@ -517,7 +526,7 @@ export class PdfController {
     try {
       const lang   = body.lang ?? 'eng';
       const result = await this.svc.ocrFile(file.buffer, file.mimetype, lang);
-      this.reply(res, result, 'ocr');
+      this.reply(res, result, this.baseName(file.originalname));
     } catch (e) {
       this.err(res, 500, (e as Error).message);
     }
@@ -543,7 +552,7 @@ export class PdfController {
         parseFloat(body.opacity    ?? '100'),
         parseFloat(body.rotation   ?? '0'),
       );
-      this.reply(res, result, 'edited');
+      this.reply(res, result, this.baseName(file.originalname));
     } catch (e) {
       this.err(res, 500, (e as Error).message);
     }
@@ -565,7 +574,7 @@ export class PdfController {
         parseFloat(body.x   ?? '100'),
         parseFloat(body.y   ?? '100'),
       );
-      this.reply(res, result, 'annotated');
+      this.reply(res, result, this.baseName(file.originalname));
     } catch (e) {
       this.err(res, 500, (e as Error).message);
     }
@@ -589,7 +598,7 @@ export class PdfController {
         parseFloat(body.height ?? '20'),
         body.color ?? '#FFFF00',
       );
-      this.reply(res, result, 'highlighted');
+      this.reply(res, result, this.baseName(file.originalname));
     } catch (e) {
       this.err(res, 500, (e as Error).message);
     }
@@ -612,7 +621,7 @@ export class PdfController {
         parseFloat(body.width  ?? '200'),
         parseFloat(body.height ?? '20'),
       );
-      this.reply(res, result, 'underlined');
+      this.reply(res, result, this.baseName(file.originalname));
     } catch (e) {
       this.err(res, 500, (e as Error).message);
     }
@@ -635,7 +644,7 @@ export class PdfController {
         parseFloat(body.width  ?? '200'),
         parseFloat(body.height ?? '20'),
       );
-      this.reply(res, result, 'strikeout');
+      this.reply(res, result, this.baseName(file.originalname));
     } catch (e) {
       this.err(res, 500, (e as Error).message);
     }
@@ -659,7 +668,7 @@ export class PdfController {
         parseFloat(body.rotation ?? '0'),
         body.pages ?? 'all',
       );
-      this.reply(res, result, 'watermarked');
+      this.reply(res, result, this.baseName(file.originalname));
     } catch (e) {
       this.err(res, 500, (e as Error).message);
     }
@@ -684,7 +693,7 @@ export class PdfController {
         parseInt(body.font_size            ?? '12',      10),
         body.font_color                    ?? '#000000',
       );
-      this.reply(res, result, 'bates');
+      this.reply(res, result, this.baseName(file.originalname));
     } catch (e) {
       this.err(res, 500, (e as Error).message);
     }
@@ -711,7 +720,7 @@ export class PdfController {
         body.font_color ?? '#000000',
         body.cover_color ?? '#ffffff',
       );
-      this.reply(res, result, 'edited');
+      this.reply(res, result, this.baseName(file.originalname));
     } catch (e) {
       this.err(res, 500, (e as Error).message);
     }
@@ -732,7 +741,7 @@ export class PdfController {
     if (!body.password) return this.err(res, 400, 'password is required in the request body.');
     try {
       const result = await this.svc.protect(file.buffer, body.password, body.owner_password);
-      this.reply(res, result, 'protected');
+      this.reply(res, result, this.baseName(file.originalname));
     } catch (e) {
       this.err(res, 500, (e as Error).message);
     }
@@ -747,7 +756,7 @@ export class PdfController {
   ) {
     if (!file) return this.err(res, 400, 'No file uploaded.');
     try {
-      this.reply(res, await this.svc.unlock(file.buffer), 'unlocked');
+      this.reply(res, await this.svc.unlock(file.buffer), this.baseName(file.originalname));
     } catch (e) {
       this.err(res, 500, (e as Error).message);
     }
@@ -770,7 +779,7 @@ export class PdfController {
         annotating:  body.annotating  === 'true',
         fillingForms: body.filling_forms === 'true',
       });
-      this.reply(res, result, 'permissions-set');
+      this.reply(res, result, this.baseName(file.originalname));
     } catch (e) {
       this.err(res, 500, (e as Error).message);
     }
@@ -794,7 +803,7 @@ export class PdfController {
         parseFloat(body.height ?? '20'),
         body.color ?? '#000000',
       );
-      this.reply(res, result, 'redacted');
+      this.reply(res, result, this.baseName(file.originalname));
     } catch (e) {
       this.err(res, 500, (e as Error).message);
     }
@@ -819,7 +828,7 @@ export class PdfController {
         parseFloat(body.opacity ?? '40'),
         parseFloat(body.rotation ?? '330'),
       );
-      this.reply(res, result, 'stamped');
+      this.reply(res, result, this.baseName(file.originalname));
     } catch (e) {
       this.err(res, 500, (e as Error).message);
     }
@@ -858,7 +867,7 @@ export class PdfController {
     if (!file) return this.err(res, 400, 'No file uploaded.');
     try {
       const result = await this.svc.validateSignature(file.buffer);
-      this.reply(res, result, 'validation-report');
+      this.reply(res, result, this.baseName(file.originalname));
     } catch (e) {
       this.err(res, 500, (e as Error).message);
     }
@@ -881,7 +890,7 @@ export class PdfController {
         ? body.conformance.toUpperCase()
         : 'B') as 'A' | 'B' | 'U';
       const result = await this.svc.pdfToPdfa(file.buffer, conformance);
-      this.reply(res, result, 'pdfa');
+      this.reply(res, result, this.baseName(file.originalname));
     } catch (e) {
       this.err(res, 500, (e as Error).message);
     }
@@ -911,7 +920,7 @@ export class PdfController {
       const version = (['1a', '3', '4'].includes(body.version)
         ? body.version : '3') as '1a' | '3' | '4';
       const result = await this.svc.pdfToPdfx(file.buffer, version);
-      this.reply(res, result, 'pdfx');
+      this.reply(res, result, this.baseName(file.originalname));
     } catch (e) {
       this.err(res, 500, (e as Error).message);
     }
@@ -923,7 +932,7 @@ export class PdfController {
     if (!file) return this.err(res, 400, 'No file uploaded.');
     try {
       const result = await this.svc.pdfToPdfe(file.buffer);
-      this.reply(res, result, 'pdfe');
+      this.reply(res, result, this.baseName(file.originalname));
     } catch (e) {
       this.err(res, 500, (e as Error).message);
     }
@@ -943,7 +952,7 @@ export class PdfController {
         body.title ?? '',
         body.lang  ?? 'en-US',
       );
-      this.reply(res, result, 'converted_pdfua');
+      this.reply(res, result, this.baseName(file.originalname));
     } catch (e) {
       this.err(res, 500, (e as Error).message);
     }
@@ -963,7 +972,7 @@ export class PdfController {
     if (!file) return this.err(res, 400, 'No file uploaded.');
     try {
       const result = await this.svc.createForm(file.buffer, body.fields ?? '[]');
-      this.reply(res, result, 'form');
+      this.reply(res, result, this.baseName(file.originalname));
     } catch (e) {
       this.err(res, 500, (e as Error).message);
     }
@@ -983,7 +992,7 @@ export class PdfController {
         body.data    ?? '{}',
         body.flatten === 'true',
       );
-      this.reply(res, result, 'filled');
+      this.reply(res, result, this.baseName(file.originalname));
     } catch (e) {
       this.err(res, 500, (e as Error).message);
     }
@@ -1003,7 +1012,7 @@ export class PdfController {
       res
         .status(HttpStatus.OK)
         .setHeader('Content-Type', result.mime)
-        .setHeader('Content-Disposition', `attachment; filename="form-data.${result.ext}"`)
+        .setHeader('Content-Disposition', `attachment; filename="${this.baseName(file.originalname)}.${result.ext}"`)
         .send(result.buffer);
     } catch (e) {
       this.err(res, 500, (e as Error).message);
@@ -1045,7 +1054,7 @@ export class PdfController {
       if (result.mime === 'application/json') {
         return res.status(HttpStatus.OK).json(JSON.parse(result.buffer.toString()));
       }
-      this.reply(res, result, 'managed');
+      this.reply(res, result, this.baseName(file.originalname));
     } catch (e) {
       this.err(res, 500, (e as Error).message);
     }
@@ -1063,7 +1072,7 @@ export class PdfController {
     if (!file) return this.err(res, 400, 'No file uploaded.');
     try {
       const result = await this.svc.pdfToPptx(file.buffer);
-      this.reply(res, result, 'presentation');
+      this.reply(res, result, this.baseName(file.originalname));
     } catch (e) {
       this.err(res, 500, (e as Error).message);
     }
@@ -1082,7 +1091,7 @@ export class PdfController {
     if (!file) return this.err(res, 400, 'No file uploaded.');
     try {
       const result = await this.svc.translatePdf(file.buffer, body.target_lang ?? 'es');
-      this.reply(res, result, 'translated');
+      this.reply(res, result, this.baseName(file.originalname));
     } catch (e) {
       this.err(res, 500, (e as Error).message);
     }
@@ -1101,7 +1110,7 @@ export class PdfController {
     if (!file) return this.err(res, 400, 'No file uploaded.');
     try {
       const result = await this.svc.reorderPages(file.buffer, body.pages ?? '');
-      this.reply(res, result, 'organized');
+      this.reply(res, result, this.baseName(file.originalname));
     } catch (e) {
       this.err(res, 500, (e as Error).message);
     }
@@ -1118,7 +1127,7 @@ export class PdfController {
     try {
       const strength = parseInt(body.strength ?? '60', 10);
       const result   = await this.svc.removePdfWatermark(file.buffer, strength);
-      this.reply(res, result, 'cleaned');
+      this.reply(res, result, this.baseName(file.originalname));
     } catch (e) {
       this.err(res, 500, (e as Error).message);
     }
