@@ -567,6 +567,13 @@ export class PdfController {
   ) {
     if (!file) return this.err(res, 400, 'No file uploaded.');
     try {
+      // If the client sends a JSON array of text boxes, apply them all at once
+      if (body.text_boxes) {
+        const boxes = JSON.parse(body.text_boxes);
+        const result = await this.svc.editPdfMulti(file.buffer, boxes);
+        return this.reply(res, result, this.baseName(file.originalname));
+      }
+      // Legacy single-box fallback
       const result = await this.svc.addTextBox(
         file.buffer,
         body.text       ?? '',
@@ -1137,6 +1144,47 @@ export class PdfController {
     try {
       const result = await this.svc.reorderPages(file.buffer, body.pages ?? '');
       this.reply(res, result, this.baseName(file.originalname));
+    } catch (e) {
+      this.err(res, 500, (e as Error).message);
+    }
+  }
+
+  /* ═══════════════════════════════════════════════════════════════════════
+     PDF EDITOR SUPPORT — info, preview, edit-pdf (multi-box)
+  ═══════════════════════════════════════════════════════════════════════ */
+
+  /** Returns { pageCount, width, height } for the uploaded PDF. */
+  @Post('info')
+  @UseInterceptors(FileInterceptor('file'))
+  async pdfInfo(@UploadedFile() file: MFile, @Res() res: Response) {
+    if (!file) return this.err(res, 400, 'No file uploaded.');
+    try {
+      const info = await this.svc.pdfInfo(file.buffer);
+      res.status(HttpStatus.OK).json(info);
+    } catch (e) {
+      this.err(res, 500, (e as Error).message);
+    }
+  }
+
+  /** Returns a single PDF page rendered as PNG. Body params: page (default 1), scale (default 1.5). */
+  @Post('preview')
+  @UseInterceptors(FileInterceptor('file'))
+  async previewPage(
+    @UploadedFile() file: MFile,
+    @Body() body: Record<string, string>,
+    @Res() res: Response,
+  ) {
+    if (!file) return this.err(res, 400, 'No file uploaded.');
+    try {
+      const page  = parseInt(body.page  ?? '1',   10);
+      const scale = parseFloat(body.scale ?? '1.5');
+      const imgBuf = await this.svc.renderPagePreview(file.buffer, page, scale);
+      res.set({
+        'Content-Type':   'image/png',
+        'Content-Length': String(imgBuf.length),
+        'Cache-Control':  'no-store',
+      });
+      res.status(HttpStatus.OK).send(imgBuf);
     } catch (e) {
       this.err(res, 500, (e as Error).message);
     }

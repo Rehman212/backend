@@ -72,6 +72,68 @@ export class PdfService {
   }
 
   /* ═══════════════════════════════════════════════════════════════════════
+     PDF INFO & PAGE PREVIEW
+  ═══════════════════════════════════════════════════════════════════════ */
+
+  async pdfInfo(buffer: Buffer): Promise<{ pageCount: number; width: number; height: number }> {
+    const doc  = await PDFDocument.load(buffer, { ignoreEncryption: true });
+    const page = doc.getPage(0);
+    return { pageCount: doc.getPageCount(), width: page.getWidth(), height: page.getHeight() };
+  }
+
+  async renderPagePreview(buffer: Buffer, pageNum = 1, scale = 1.5): Promise<Buffer> {
+    const pdfjsLib    = require('pdfjs-dist/legacy/build/pdf.js') as any;
+    const { createCanvas } = require('canvas') as { createCanvas: (w: number, h: number) => any };
+    pdfjsLib.GlobalWorkerOptions.workerSrc = '';
+
+    const pdfDoc  = await pdfjsLib.getDocument({ data: new Uint8Array(buffer), verbosity: 0 }).promise;
+    const page    = await pdfDoc.getPage(Math.max(1, Math.min(pageNum, pdfDoc.numPages)));
+    const vp      = page.getViewport({ scale });
+    const w       = Math.round(vp.width);
+    const h       = Math.round(vp.height);
+
+    const canvas  = createCanvas(w, h);
+    const context = canvas.getContext('2d');
+    context.fillStyle = '#ffffff';
+    context.fillRect(0, 0, w, h);
+
+    const canvasFactory = {
+      create:  (cw: number, ch: number) => {
+        const c = createCanvas(cw, ch); const ctx = c.getContext('2d');
+        ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, cw, ch);
+        return { canvas: c, context: ctx };
+      },
+      reset:   (pair: any, cw: number, ch: number) => {
+        pair.canvas.width = cw; pair.canvas.height = ch;
+        pair.context.fillStyle = '#ffffff'; pair.context.fillRect(0, 0, cw, ch);
+      },
+      destroy: (pair: any) => { pair.canvas.width = 0; pair.canvas.height = 0; },
+    };
+
+    await page.render({ canvasContext: context, viewport: vp, canvasFactory }).promise;
+    return canvas.toBuffer('image/png');
+  }
+
+  /** Apply multiple text boxes sequentially to a PDF. */
+  async editPdfMulti(
+    buffer: Buffer,
+    boxes: Array<{
+      text: string; page: number; x: number; y: number;
+      font_size: number; font_color: string; opacity: number; rotation: number;
+    }>,
+  ): Promise<PdfResult> {
+    let current = buffer;
+    for (const b of boxes) {
+      const r = await this.addTextBox(
+        current, b.text, String(b.page),
+        b.x, b.y, b.font_size, b.font_color, b.opacity, b.rotation,
+      );
+      current = r.buffer;
+    }
+    return { buffer: current, mime: 'application/pdf', ext: 'pdf' };
+  }
+
+  /* ═══════════════════════════════════════════════════════════════════════
      ORGANIZE
   ═══════════════════════════════════════════════════════════════════════ */
 
