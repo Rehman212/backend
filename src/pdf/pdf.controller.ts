@@ -567,10 +567,11 @@ export class PdfController {
   ) {
     if (!file) return this.err(res, 400, 'No file uploaded.');
     try {
-      // If the client sends a JSON array of text boxes, apply them all at once
-      if (body.text_boxes) {
-        const boxes = JSON.parse(body.text_boxes);
-        const result = await this.svc.editPdfMulti(file.buffer, boxes);
+      // If the client sends a JSON array of elements (text + erase), apply them all at once
+      const raw = body.elements ?? body.text_boxes;
+      if (raw) {
+        const elements = JSON.parse(raw);
+        const result   = await this.svc.editPdfMulti(file.buffer, elements);
         return this.reply(res, result, this.baseName(file.originalname));
       }
       // Legacy single-box fallback

@@ -117,20 +117,44 @@ export class PdfService {
   /** Apply multiple text boxes sequentially to a PDF. */
   async editPdfMulti(
     buffer: Buffer,
-    boxes: Array<{
-      text: string; page: number; x: number; y: number;
-      font_size: number; font_color: string; opacity: number; rotation: number;
+    elements: Array<{
+      type?: 'text' | 'erase';
+      text?: string; page: number; x: number; y: number;
+      font_size?: number; font_color?: string; opacity?: number; rotation?: number;
+      width?: number; height?: number;
     }>,
   ): Promise<PdfResult> {
-    let current = buffer;
-    for (const b of boxes) {
-      const r = await this.addTextBox(
-        current, b.text, String(b.page),
-        b.x, b.y, b.font_size, b.font_color, b.opacity, b.rotation,
-      );
-      current = r.buffer;
+    const doc   = await PDFDocument.load(buffer, { ignoreEncryption: true });
+    const font  = await doc.embedFont(StandardFonts.Helvetica);
+    const pages = doc.getPages();
+
+    for (const el of elements) {
+      const pi   = Math.max(0, Math.min((el.page ?? 1) - 1, pages.length - 1));
+      const page = pages[pi];
+
+      if (!el.type || el.type === 'text') {
+        /* coords are already in PDF bottom-left space (sent by EditPdfClient) */
+        const color = this.hexToColor(el.font_color || '#000000');
+        const op    = Math.max(0, Math.min(100, el.opacity ?? 100)) / 100;
+        page.drawText(el.text || '', {
+          x: el.x, y: el.y,
+          size: el.font_size ?? 14,
+          font, color, opacity: op,
+          rotate: degrees(el.rotation ?? 0),
+        });
+      } else if (el.type === 'erase') {
+        /* white-filled rectangle to cover existing content */
+        page.drawRectangle({
+          x: el.x, y: el.y,
+          width:  el.width  ?? 80,
+          height: el.height ?? 20,
+          color: rgb(1, 1, 1),
+          opacity: 1,
+          borderWidth: 0,
+        });
+      }
     }
-    return { buffer: current, mime: 'application/pdf', ext: 'pdf' };
+    return { buffer: this.toBuffer(await doc.save()), mime: 'application/pdf', ext: 'pdf' };
   }
 
   /* ═══════════════════════════════════════════════════════════════════════
