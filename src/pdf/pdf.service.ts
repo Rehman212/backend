@@ -51,6 +51,37 @@ export class PdfService {
     return Buffer.from(u8);
   }
 
+  /**
+   * Strip characters that pdf-lib's WinAnsi (Helvetica) font cannot encode.
+   * - Invisible / zero-width chars (U+200B, U+FEFF, etc.) → removed
+   * - Latin + WinAnsi extras (smart quotes, dashes, euro …) → kept as-is
+   * - Everything else (CJK, Arabic, Cyrillic beyond U+00FF …) → '?'
+   */
+  private sanitizeWinAnsi(text: string): string {
+    const WINEXTRA = new Set([
+      0x0152,0x0153,0x0160,0x0161,0x0178,0x017D,0x017E,
+      0x0192,0x02C6,0x02DC,
+      0x2013,0x2014,0x2018,0x2019,0x201A,0x201C,0x201D,0x201E,
+      0x2020,0x2021,0x2022,0x2026,0x2030,0x2039,0x203A,0x20AC,0x2122,
+    ]);
+    return Array.from(text).map(ch => {
+      const cp = ch.codePointAt(0) ?? 0;
+      // invisible / zero-width → drop silently
+      if ([0x00AD,0x200B,0x200C,0x200D,0x200E,0x200F,
+           0x2028,0x2029,0x2060,0xFEFF].includes(cp)) return '';
+      // keep newlines and tabs
+      if (cp === 0x09 || cp === 0x0A || cp === 0x0D) return ch;
+      // other control chars → drop
+      if (cp < 0x20) return '';
+      // printable ASCII + Latin-1 Supplement: always WinAnsi-safe
+      if (cp <= 0xFF) return ch;
+      // WinAnsi extended code points
+      if (WINEXTRA.has(cp)) return ch;
+      // everything else (CJK, Arabic, Cyrillic accents, emoji …) → '?'
+      return '?';
+    }).join('');
+  }
+
   /** Parse "1-3, 5, 7-9" into arrays of 0-based page indices. */
   private parseRanges(rangesStr: string, total: number): number[][] {
     const result: number[][] = [];
@@ -2851,6 +2882,9 @@ export class PdfService {
       rawText += (content.items as any[]).map((item: any) => item.str).join(' ') + '\n';
     }
 
+    // Strip invisible chars from source before translation
+    rawText = rawText.replace(/[\u200B-\u200F\u2028\u2029\u2060\uFEFF\u00AD]/g, '');
+
     if (!rawText.trim()) {
       throw new BadRequestException('No extractable text found in this PDF. Scanned/image PDFs cannot be translated.');
     }
@@ -2871,7 +2905,7 @@ export class PdfService {
       if (!resp.ok) throw new BadRequestException(`Translation failed (HTTP ${resp.status}). Try again later.`);
       const data = await resp.json() as any[][];
       const parts: string[] = (data[0] ?? []).map((seg: any[]) => seg[0] ?? '');
-      translated.push(parts.join(''));
+      translated.push(this.sanitizeWinAnsi(parts.join('')));
     }
 
     const finalText = translated.join('\n');
