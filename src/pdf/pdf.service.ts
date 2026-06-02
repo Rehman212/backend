@@ -2617,18 +2617,25 @@ export class PdfService {
 
   /** DXF → PDF — parses DXF entities and renders them with pdf-lib. DWG returns a clear error. */
   async cadToPdf(buffer: Buffer, ext: string): Promise<PdfResult> {
-    if (ext === 'dwg') {
+    if (ext !== 'dxf') {
       throw new BadRequestException(
-        'DWG is a proprietary binary format with no open-source npm parser. ' +
-        'Convert to DXF first (AutoCAD: "Save As DXF", FreeCAD / LibreCAD: "Export as DXF") and re-upload the .dxf file.',
+        ext === 'dwg'
+          ? 'DWG format is not supported. Please convert your file to DXF first using AutoCAD ("Save As DXF"), FreeCAD, or LibreCAD ("Export as DXF"), then re-upload the .dxf file.'
+          : `Unsupported CAD format ".${ext}". Only DXF (.dxf) is supported.`,
       );
     }
-    if (ext !== 'dxf') {
-      throw new BadRequestException(`Unsupported CAD format ".${ext}". Supported: dxf`);
+
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const DxfParser = require('dxf-parser');
+    const parser = new DxfParser();
+    let dxf: any;
+    try {
+      dxf = parser.parseSync(buffer.toString('utf-8'));
+    } catch (e) {
+      throw new Error(`Failed to parse DXF file: ${(e as Error).message}`);
     }
 
-    const content  = buffer.toString('utf-8');
-    const entities = this.parseDxfEntities(content);
+    const entities: any[] = dxf?.entities ?? [];
 
     // ── Bounding box ─────────────────────────────────────────────────────────
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
@@ -2638,14 +2645,35 @@ export class PdfService {
       if (x > maxX) maxX = x; if (y > maxY) maxY = y;
     };
 
+    // ── Bounding box (using dxf-parser entity shapes) ─────────────────────────
     for (const e of entities) {
       switch (e.type) {
-        case 'LINE':       upd(e.x0, e.y0); upd(e.x1, e.y1); break;
+        case 'LINE':
+          upd(e.vertices?.[0]?.x ?? 0, e.vertices?.[0]?.y ?? 0);
+          upd(e.vertices?.[1]?.x ?? 0, e.vertices?.[1]?.y ?? 0);
+          break;
         case 'CIRCLE':
-        case 'ARC':        upd(e.x0 - e.r, e.y0 - e.r); upd(e.x0 + e.r, e.y0 + e.r); break;
-        case 'LWPOLYLINE': for (const v of e.vertices ?? []) upd(v.x, v.y); break;
+        case 'ARC':
+          upd((e.center?.x ?? 0) - (e.radius ?? 0), (e.center?.y ?? 0) - (e.radius ?? 0));
+          upd((e.center?.x ?? 0) + (e.radius ?? 0), (e.center?.y ?? 0) + (e.radius ?? 0));
+          break;
+        case 'LWPOLYLINE':
+        case 'POLYLINE':
+          for (const v of (e.vertices ?? [])) upd(v.x ?? 0, v.y ?? 0);
+          break;
+        case 'SPLINE':
+          for (const v of (e.controlPoints ?? e.fitPoints ?? [])) upd(v.x ?? 0, v.y ?? 0);
+          break;
+        case 'ELLIPSE':
+          upd((e.center?.x ?? 0) - Math.abs(e.majorAxisEndPoint?.x ?? 0),
+              (e.center?.y ?? 0) - Math.abs(e.majorAxisEndPoint?.y ?? 0));
+          upd((e.center?.x ?? 0) + Math.abs(e.majorAxisEndPoint?.x ?? 0),
+              (e.center?.y ?? 0) + Math.abs(e.majorAxisEndPoint?.y ?? 0));
+          break;
         case 'TEXT':
-        case 'MTEXT':      upd(e.x0 ?? 0, e.y0 ?? 0); break;
+        case 'MTEXT':
+          upd(e.startPoint?.x ?? e.position?.x ?? 0, e.startPoint?.y ?? e.position?.y ?? 0);
+          break;
       }
     }
 
@@ -2657,15 +2685,26 @@ export class PdfService {
     // A4 landscape for technical drawings
     const pageW  = 841.89;
     const pageH  = 595.28;
-    const margin = 30;
+    const margin = 40;
     const scale  = Math.min((pageW - margin * 2) / dxfW, (pageH - margin * 2) / dxfH);
 
     const tx = (x: number) => margin + (x - minX) * scale;
-    const ty = (y: number) => margin + (y - minY) * scale; // DXF Y↑ matches PDF Y↑
+    const ty = (y: number) => margin + (y - minY) * scale;
+
+    // Inline arc sampler (degrees)
+    const sampleArcPts = (cx: number, cy: number, r: number, s: number, e: number, n = 48): [number,number][] => {
+      const pts: [number,number][] = [];
+      let end = e; if (end <= s) end += 360;
+      const step = (end - s) / n;
+      for (let d = s; d <= end + step * 0.5; d += step) {
+        const rad = Math.min(d, end) * (Math.PI / 180);
+        pts.push([cx + r * Math.cos(rad), cy + r * Math.sin(rad)]);
+      }
+      return pts;
+    };
 
     const doc  = await PDFDocument.create();
     doc.setTitle('CAD Drawing');
-    doc.setProducer('ImageDigitalHub');
     const page = doc.addPage([pageW, pageH]);
     const font = await doc.embedFont(StandardFonts.Helvetica);
     const ink  = rgb(0.1, 0.1, 0.1);
@@ -2674,47 +2713,82 @@ export class PdfService {
     for (const e of entities) {
       try {
         switch (e.type) {
-          case 'LINE':
-            page.drawLine({
-              start: { x: tx(e.x0 ?? 0), y: ty(e.y0 ?? 0) },
-              end:   { x: tx(e.x1 ?? 0), y: ty(e.y1 ?? 0) },
-              color: ink, thickness: sw,
-            });
-            break;
-
-          case 'CIRCLE':
-            page.drawCircle({
-              x: tx(e.x0), y: ty(e.y0),
-              size: (e.r ?? 0) * scale,
-              borderColor: ink, borderWidth: sw,
-            });
-            break;
-
-          case 'ARC': {
-            const pts = this.sampleArc(e.x0, e.y0, e.r ?? 0, e.startAngle ?? 0, e.endAngle ?? 360, 48);
-            for (let j = 0; j < pts.length - 1; j++) {
+          case 'LINE': {
+            const v = e.vertices ?? [];
+            if (v.length >= 2) {
               page.drawLine({
-                start: { x: tx(pts[j][0]),     y: ty(pts[j][1])     },
-                end:   { x: tx(pts[j + 1][0]), y: ty(pts[j + 1][1]) },
+                start: { x: tx(v[0].x), y: ty(v[0].y) },
+                end:   { x: tx(v[1].x), y: ty(v[1].y) },
                 color: ink, thickness: sw,
               });
             }
             break;
           }
 
-          case 'LWPOLYLINE': {
-            const verts = e.vertices ?? [];
-            for (let j = 0; j < verts.length - 1; j++) {
+          case 'CIRCLE':
+            page.drawCircle({
+              x: tx(e.center.x), y: ty(e.center.y),
+              size: (e.radius ?? 0) * scale,
+              borderColor: ink, borderWidth: sw,
+            });
+            break;
+
+          case 'ARC': {
+            const pts = sampleArcPts(e.center.x, e.center.y, e.radius ?? 0, e.startAngle ?? 0, e.endAngle ?? 360);
+            for (let j = 0; j < pts.length - 1; j++) {
               page.drawLine({
-                start: { x: tx(verts[j].x),     y: ty(verts[j].y)     },
-                end:   { x: tx(verts[j + 1].x), y: ty(verts[j + 1].y) },
+                start: { x: tx(pts[j][0]),     y: ty(pts[j][1])     },
+                end:   { x: tx(pts[j+1][0]), y: ty(pts[j+1][1]) },
                 color: ink, thickness: sw,
               });
             }
-            if (e.closed && verts.length > 1) {
+            break;
+          }
+
+          case 'LWPOLYLINE':
+          case 'POLYLINE': {
+            const verts = e.vertices ?? [];
+            const closed = e.shape ?? e.closed ?? false;
+            const count  = closed ? verts.length : verts.length - 1;
+            for (let j = 0; j < count; j++) {
+              const a = verts[j], b = verts[(j + 1) % verts.length];
               page.drawLine({
-                start: { x: tx(verts[verts.length - 1].x), y: ty(verts[verts.length - 1].y) },
-                end:   { x: tx(verts[0].x),                y: ty(verts[0].y)                },
+                start: { x: tx(a.x), y: ty(a.y) },
+                end:   { x: tx(b.x), y: ty(b.y) },
+                color: ink, thickness: sw,
+              });
+            }
+            break;
+          }
+
+          case 'SPLINE': {
+            const pts = e.controlPoints ?? e.fitPoints ?? [];
+            for (let j = 0; j < pts.length - 1; j++) {
+              page.drawLine({
+                start: { x: tx(pts[j].x),   y: ty(pts[j].y)   },
+                end:   { x: tx(pts[j+1].x), y: ty(pts[j+1].y) },
+                color: ink, thickness: sw,
+              });
+            }
+            break;
+          }
+
+          case 'ELLIPSE': {
+            const cx = e.center?.x ?? 0, cy = e.center?.y ?? 0;
+            const majorX = e.majorAxisEndPoint?.x ?? 0, majorY = e.majorAxisEndPoint?.y ?? 0;
+            const major  = Math.sqrt(majorX * majorX + majorY * majorY);
+            const minor  = major * (e.axisRatio ?? 1);
+            const rot    = Math.atan2(majorY, majorX);
+            const startA = ((e.startAngle ?? 0) * 180) / Math.PI;
+            const endA   = ((e.endAngle   ?? Math.PI * 2) * 180) / Math.PI;
+            const pts    = sampleArcPts(0, 0, 1, startA, endA);
+            for (let j = 0; j < pts.length - 1; j++) {
+              const ax = pts[j][0]*major,   ay = pts[j][1]*minor;
+              const bx = pts[j+1][0]*major, by = pts[j+1][1]*minor;
+              const cosR = Math.cos(rot), sinR = Math.sin(rot);
+              page.drawLine({
+                start: { x: tx(cx + ax*cosR - ay*sinR), y: ty(cy + ax*sinR + ay*cosR) },
+                end:   { x: tx(cx + bx*cosR - by*sinR), y: ty(cy + bx*sinR + by*cosR) },
                 color: ink, thickness: sw,
               });
             }
@@ -2723,10 +2797,16 @@ export class PdfService {
 
           case 'TEXT':
           case 'MTEXT': {
-            const txt = this.sanitizeForPdf(e.text ?? '').trim();
-            if (txt) {
-              const fs = Math.max(6, Math.min((e.h ?? 2.5) * scale, 12));
-              page.drawText(txt, { x: tx(e.x0 ?? 0), y: ty(e.y0 ?? 0), size: fs, font, color: ink });
+            const x   = e.startPoint?.x ?? e.position?.x ?? 0;
+            const y   = e.startPoint?.y ?? e.position?.y ?? 0;
+            const raw = (e.text ?? e.string ?? '').replace(/\\[^;]+;/g, '').replace(/[{}]/g, '').trim();
+            if (raw) {
+              const h = e.textHeight ?? e.height ?? 2.5;
+              page.drawText(this.sanitizeForPdf(raw), {
+                x: tx(x), y: ty(y),
+                size: Math.max(6, Math.min(h * scale, 14)),
+                font, color: ink,
+              });
             }
             break;
           }
@@ -2735,86 +2815,6 @@ export class PdfService {
     }
 
     return { buffer: this.toBuffer(await doc.save()), mime: 'application/pdf', ext: 'pdf' };
-  }
-
-  /** Sample an ARC into N line-segment points (angles in degrees). */
-  private sampleArc(
-    cx: number, cy: number, r: number,
-    startDeg: number, endDeg: number, n: number,
-  ): [number, number][] {
-    const pts: [number, number][] = [];
-    let s = startDeg;
-    let e = endDeg;
-    if (e <= s) e += 360;
-    const step = (e - s) / n;
-    for (let d = s; d <= e + step * 0.5; d += step) {
-      const rad = Math.min(d, e) * (Math.PI / 180);
-      pts.push([cx + r * Math.cos(rad), cy + r * Math.sin(rad)]);
-    }
-    return pts;
-  }
-
-  /**
-   * Minimal DXF parser — reads the ENTITIES section and extracts:
-   * LINE, CIRCLE, ARC, LWPOLYLINE, TEXT, MTEXT.
-   * DXF format: sequential group-code / value line pairs.
-   */
-  private parseDxfEntities(content: string): any[] {
-    const lines    = content.split(/\r?\n/);
-    const entities: any[] = [];
-    let inEntities = false;
-    let cur: any   = null;
-    let i          = 0;
-
-    while (i < lines.length - 1) {
-      const codeLine = lines[i++].trim();
-      const valLine  = lines[i++]?.trim() ?? '';
-
-      const code = parseInt(codeLine, 10);
-      if (isNaN(code)) { i -= 1; continue; } // re-sync on stray blank line
-
-      const val = valLine;
-      const num = parseFloat(val);
-
-      if (code === 0) {
-        if (val === 'ENTITIES') { inEntities = true; continue; }
-        if (val === 'ENDSEC' || val === 'EOF') { inEntities = false; continue; }
-        if (inEntities) {
-          cur = { type: val };
-          if (val === 'LWPOLYLINE') cur.vertices = [];
-          entities.push(cur);
-        }
-        continue;
-      }
-
-      if (!inEntities || !cur) continue;
-
-      switch (code) {
-        case 8:  cur.layer = val; break;
-        case 1:  cur.text  = val; break;
-        case 3:  cur.text  = (cur.text ?? '') + val; break; // MTEXT overflow continuation
-        case 10:
-          if (cur.type === 'LWPOLYLINE') { cur._px = isNaN(num) ? 0 : num; }
-          else { cur.x0 = isNaN(num) ? 0 : num; }
-          break;
-        case 20:
-          if (cur.type === 'LWPOLYLINE') {
-            (cur.vertices ??= []).push({ x: cur._px ?? 0, y: isNaN(num) ? 0 : num });
-          } else { cur.y0 = isNaN(num) ? 0 : num; }
-          break;
-        case 11: cur.x1 = isNaN(num) ? 0 : num; break;
-        case 21: cur.y1 = isNaN(num) ? 0 : num; break;
-        case 40:
-          if (cur.type === 'TEXT' || cur.type === 'MTEXT') cur.h = isNaN(num) ? 2.5 : num;
-          else cur.r = isNaN(num) ? 0 : num;
-          break;
-        case 50: cur.startAngle = isNaN(num) ? 0   : num; break;
-        case 51: cur.endAngle   = isNaN(num) ? 360 : num; break;
-        case 70: cur.flags = parseInt(val) || 0; cur.closed = (cur.flags & 1) !== 0; break;
-      }
-    }
-
-    return entities;
   }
 
   /** EPUB → PDF — unzips the EPUB, extracts HTML chapter text with node-html-parser. */
