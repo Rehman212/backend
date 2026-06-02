@@ -2814,7 +2814,9 @@ export class PdfService {
   /* ─── Translate PDF ─────────────────────────────────────────────────────── */
   async translatePdf(buffer: Buffer, targetLang: string): Promise<PdfResult> {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const pdfParse = require('pdf-parse') as (buf: Buffer) => Promise<{ text: string }>;
+    const _pdfParseModule = require('pdf-parse');
+    const pdfParse: (buf: Buffer) => Promise<{ text: string }> =
+      typeof _pdfParseModule === 'function' ? _pdfParseModule : (_pdfParseModule.default ?? _pdfParseModule);
 
     const lang = (targetLang || 'es').replace(/[^a-z-]/gi, '').slice(0, 10);
 
