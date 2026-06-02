@@ -345,6 +345,14 @@ export class PdfService {
       groups = this.parseRanges(rangesStr, total);
     }
 
+    // Single group → return plain PDF (no ZIP)
+    if (groups.length === 1) {
+      const newDoc = await PDFDocument.create();
+      const copied = await newDoc.copyPages(doc, groups[0]);
+      copied.forEach(p => newDoc.addPage(p));
+      return { buffer: this.toBuffer(await newDoc.save()), mime: 'application/pdf', ext: 'pdf' };
+    }
+
     for (let i = 0; i < groups.length; i++) {
       const newDoc = await PDFDocument.create();
       const copied = await newDoc.copyPages(doc, groups[i]);
