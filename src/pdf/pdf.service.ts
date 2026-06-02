@@ -145,7 +145,11 @@ export class PdfService {
     return canvas.toBuffer('image/png');
   }
 
-  /** Apply multiple text boxes sequentially to a PDF. */
+  /** Apply erase (white rects) + text elements to a PDF.
+   *  Erase  → pdf-lib drawRectangle (white fill)
+   *  Text   → iLovePDF editpdf API (proper font rendering, Unicode support)
+   *           Falls back to pdf-lib Helvetica if API key is not configured.
+   */
   async editPdfMulti(
     buffer: Buffer,
     elements: Array<{
@@ -155,26 +159,18 @@ export class PdfService {
       width?: number; height?: number;
     }>,
   ): Promise<PdfResult> {
-    const doc   = await PDFDocument.load(buffer, { ignoreEncryption: true });
-    const font  = await doc.embedFont(StandardFonts.Helvetica);
-    const pages = doc.getPages();
+    const textEls  = elements.filter(e => !e.type || e.type === 'text');
+    const eraseEls = elements.filter(e => e.type === 'erase');
 
-    for (const el of elements) {
-      const pi   = Math.max(0, Math.min((el.page ?? 1) - 1, pages.length - 1));
-      const page = pages[pi];
+    let current = buffer;
 
-      if (!el.type || el.type === 'text') {
-        /* coords are already in PDF bottom-left space (sent by EditPdfClient) */
-        const color = this.hexToColor(el.font_color || '#000000');
-        const op    = Math.max(0, Math.min(100, el.opacity ?? 100)) / 100;
-        page.drawText(el.text || '', {
-          x: el.x, y: el.y,
-          size: el.font_size ?? 14,
-          font, color, opacity: op,
-          rotate: degrees(el.rotation ?? 0),
-        });
-      } else if (el.type === 'erase') {
-        /* white-filled rectangle to cover existing content */
+    /* ── Step 1: white-rectangle erasing via pdf-lib ─────────────────────── */
+    if (eraseEls.length > 0) {
+      const doc   = await PDFDocument.load(current, { ignoreEncryption: true });
+      const pages = doc.getPages();
+      for (const el of eraseEls) {
+        const pi   = Math.max(0, Math.min((el.page ?? 1) - 1, pages.length - 1));
+        const page = pages[pi];
         page.drawRectangle({
           x: el.x, y: el.y,
           width:  el.width  ?? 80,
@@ -184,8 +180,131 @@ export class PdfService {
           borderWidth: 0,
         });
       }
+      current = this.toBuffer(await doc.save());
     }
-    return { buffer: this.toBuffer(await doc.save()), mime: 'application/pdf', ext: 'pdf' };
+
+    /* ── Step 2: text adding via iLovePDF editpdf API ────────────────────── */
+    if (textEls.length > 0) {
+      const publicKey = process.env.ILOVEPDF_PUBLIC_KEY;
+
+      if (publicKey) {
+        /* Get page heights for coordinate conversion (pdf-lib bottom-left → iLovePDF top-left) */
+        const pdfDoc   = await PDFDocument.load(current, { ignoreEncryption: true });
+        const pageDims = pdfDoc.getPages().map(p => ({ w: p.getWidth(), h: p.getHeight() }));
+
+        /* 1. Auth */
+        const authRes = await fetch('https://api.ilovepdf.com/v1/auth', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ public_key: publicKey }),
+        });
+        if (!authRes.ok) throw new Error(`iLovePDF auth failed: ${await authRes.text()}`);
+        const { token } = await authRes.json() as { token: string };
+
+        /* 2. Start editpdf task */
+        const startRes = await fetch('https://api.ilovepdf.com/v1/start/editpdf', {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!startRes.ok) throw new Error(`iLovePDF start failed: ${await startRes.text()}`);
+        const { server, task } = await startRes.json() as { server: string; task: string };
+
+        /* 3. Upload file */
+        const ab = new ArrayBuffer(current.byteLength);
+        new Uint8Array(ab).set(current);
+        const uploadForm = new FormData();
+        uploadForm.append('task', task);
+        uploadForm.append('file', new Blob([ab], { type: 'application/pdf' }), 'document.pdf');
+        const uploadRes = await fetch(`https://${server}/v1/upload`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}` },
+          body: uploadForm,
+        });
+        if (!uploadRes.ok) throw new Error(`iLovePDF upload failed: ${await uploadRes.text()}`);
+        const { server_filename } = await uploadRes.json() as { server_filename: string };
+
+        /* 4. Build iLovePDF elements
+         *    Coordinate conversion: EditPdfClient sends y in PDF bottom-left pts.
+         *    iLovePDF expects y from the TOP of the page.
+         *    → ilovepdfY = pageHeight - element.y
+         */
+        const ilovepdfElements = textEls.map(el => {
+          const pi     = Math.max(0, Math.min((el.page ?? 1) - 1, pageDims.length - 1));
+          const pageH  = pageDims[pi]?.h ?? 842;
+          const color  = (el.font_color ?? '#000000').replace('#', '');
+          return {
+            type:              'text',
+            text:               el.text || '',
+            pages:             { ranges: [{ start: el.page ?? 1, end: el.page ?? 1 }], rangeType: 'fixed' },
+            position:          { x: el.x, y: pageH - el.y },
+            font_family:       'Arial',
+            font_style:        'Regular',
+            font_size:          el.font_size  ?? 14,
+            font_color:         color,
+            opacity:            el.opacity    ?? 100,
+            font_weight:        400,
+            font_style_italic:  false,
+            text_decoration:   'null',
+            align:             'left',
+            rotation:           el.rotation   ?? 0,
+          };
+        });
+
+        /* 5. Process */
+        const processRes = await fetch(`https://${server}/v1/process`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            task,
+            tool:     'editpdf',
+            files:    [{ server_filename, filename: 'document.pdf' }],
+            elements: ilovepdfElements,
+          }),
+        });
+        if (!processRes.ok) throw new Error(`iLovePDF process failed: ${await processRes.text()}`);
+
+        /* 6. Download */
+        const dlRes = await fetch(`https://${server}/v1/download/${task}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!dlRes.ok) throw new Error(`iLovePDF download failed: ${await dlRes.text()}`);
+
+        const contentType = dlRes.headers.get('content-type') ?? '';
+        const rawBuffer   = Buffer.from(await dlRes.arrayBuffer());
+
+        if (contentType.includes('zip') || contentType.includes('octet-stream')) {
+          try {
+            const zip      = await JSZip.loadAsync(rawBuffer);
+            const pdfEntry = Object.values(zip.files).find(f => f.name.endsWith('.pdf'));
+            current = pdfEntry
+              ? Buffer.from(await pdfEntry.async('arraybuffer'))
+              : rawBuffer;
+          } catch { current = rawBuffer; }
+        } else {
+          current = rawBuffer;
+        }
+
+      } else {
+        /* ── Fallback: pdf-lib Helvetica (no API key configured) ─────────── */
+        const doc   = await PDFDocument.load(current, { ignoreEncryption: true });
+        const font  = await doc.embedFont(StandardFonts.Helvetica);
+        const pages = doc.getPages();
+        for (const el of textEls) {
+          const pi   = Math.max(0, Math.min((el.page ?? 1) - 1, pages.length - 1));
+          const page = pages[pi];
+          page.drawText(el.text || '', {
+            x: el.x, y: el.y,
+            size:    el.font_size  ?? 14,
+            font,
+            color:   this.hexToColor(el.font_color || '#000000'),
+            opacity: Math.max(0, Math.min(100, el.opacity ?? 100)) / 100,
+            rotate:  degrees(el.rotation ?? 0),
+          });
+        }
+        current = this.toBuffer(await doc.save());
+      }
+    }
+
+    return { buffer: current, mime: 'application/pdf', ext: 'pdf' };
   }
 
   /* ═══════════════════════════════════════════════════════════════════════
