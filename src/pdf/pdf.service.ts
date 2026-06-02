@@ -2838,14 +2838,18 @@ export class PdfService {
   /* ─── Translate PDF ─────────────────────────────────────────────────────── */
   async translatePdf(buffer: Buffer, targetLang: string): Promise<PdfResult> {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const _pdfParseModule = require('pdf-parse');
-    const pdfParse: (buf: Buffer) => Promise<{ text: string }> =
-      typeof _pdfParseModule === 'function' ? _pdfParseModule : (_pdfParseModule.default ?? _pdfParseModule);
+    const pdfjsLib = require('pdfjs-dist/legacy/build/pdf.js') as any;
+    pdfjsLib.GlobalWorkerOptions.workerSrc = '';
 
-    const lang = (targetLang || 'es').replace(/[^a-z-]/gi, '').slice(0, 10);
+    const lang   = (targetLang || 'es').replace(/[^a-z-]/gi, '').slice(0, 10);
+    const pdfDoc = await pdfjsLib.getDocument({ data: new Uint8Array(buffer), verbosity: 0 }).promise;
 
-    const parsed = await pdfParse(buffer);
-    const rawText = parsed.text || '';
+    let rawText = '';
+    for (let i = 1; i <= pdfDoc.numPages; i++) {
+      const page    = await pdfDoc.getPage(i);
+      const content = await page.getTextContent();
+      rawText += (content.items as any[]).map((item: any) => item.str).join(' ') + '\n';
+    }
 
     if (!rawText.trim()) {
       throw new BadRequestException('No extractable text found in this PDF. Scanned/image PDFs cannot be translated.');
