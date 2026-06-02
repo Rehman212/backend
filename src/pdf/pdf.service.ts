@@ -2344,7 +2344,7 @@ export class PdfService {
         return this.excelToPdf(buffer, ext);
       case 'pptx':
       case 'ppt':
-        return this.pptToPdf(buffer);
+        return this.pptToPdf(buffer, ext);
       case 'rtf':
         return this.rtfToPdf(buffer);
       default:
@@ -2511,25 +2511,82 @@ export class PdfService {
   }
 
   /** PPTX / PPT → PDF — extracts text from slide XML using JSZip. */
-  private async pptToPdf(buffer: Buffer): Promise<PdfResult> {
-    const zip        = await JSZip.loadAsync(buffer);
-    const slideFiles = Object.keys(zip.files)
-      .filter(n => /^ppt\/slides\/slide\d+\.xml$/.test(n))
-      .sort((a, b) => {
-        const na = parseInt(a.match(/\d+/)?.[0] ?? '0', 10);
-        const nb = parseInt(b.match(/\d+/)?.[0] ?? '0', 10);
-        return na - nb;
-      });
+  /** PPTX / PPT → PDF via iLovePDF officepdf task (preserves full slide formatting). */
+  private async pptToPdf(buffer: Buffer, ext = 'pptx'): Promise<PdfResult> {
+    const publicKey = process.env.ILOVEPDF_PUBLIC_KEY;
+    if (!publicKey) throw new Error('ILOVEPDF_PUBLIC_KEY not set in environment');
 
-    let text = '';
-    for (let i = 0; i < slideFiles.length; i++) {
-      const xml     = await zip.files[slideFiles[i]].async('text');
-      const matches = xml.match(/<a:t[^>]*>([^<]*)<\/a:t>/g) ?? [];
-      const slide   = matches.map(m => m.replace(/<[^>]+>/g, '').trim()).filter(Boolean).join(' ');
-      if (slide) text += `Slide ${i + 1}\n${'─'.repeat(30)}\n${slide}\n\n`;
+    const filename = `presentation.${ext}`;
+    const mime =
+      ext === 'pptx'
+        ? 'application/vnd.openxmlformats-officedocument.presentationml.presentation'
+        : 'application/vnd.ms-powerpoint';
+
+    // 1. Authenticate → get JWT token
+    const authRes = await fetch('https://api.ilovepdf.com/v1/auth', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ public_key: publicKey }),
+    });
+    if (!authRes.ok) throw new Error(`iLovePDF auth failed: ${await authRes.text()}`);
+    const { token } = (await authRes.json()) as { token: string };
+
+    // 2. Start officepdf task → get server + task id
+    const startRes = await fetch('https://api.ilovepdf.com/v1/start/officepdf', {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!startRes.ok) throw new Error(`iLovePDF start failed: ${await startRes.text()}`);
+    const { server, task } = (await startRes.json()) as { server: string; task: string };
+
+    // 3. Upload file
+    const ab = new ArrayBuffer(buffer.byteLength);
+    new Uint8Array(ab).set(buffer);
+    const uploadForm = new FormData();
+    uploadForm.append('task', task);
+    uploadForm.append('file', new Blob([ab], { type: mime }), filename);
+    const uploadRes = await fetch(`https://${server}/v1/upload`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+      body: uploadForm,
+    });
+    if (!uploadRes.ok) throw new Error(`iLovePDF upload failed: ${await uploadRes.text()}`);
+    const { server_filename } = (await uploadRes.json()) as { server_filename: string };
+
+    // 4. Process (convert)
+    const processRes = await fetch(`https://${server}/v1/process`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        task,
+        tool: 'officepdf',
+        files: [{ server_filename, filename }],
+      }),
+    });
+    if (!processRes.ok) throw new Error(`iLovePDF process failed: ${await processRes.text()}`);
+
+    // 5. Download result
+    const dlRes = await fetch(`https://${server}/v1/download/${task}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!dlRes.ok) throw new Error(`iLovePDF download failed: ${await dlRes.text()}`);
+
+    const contentType = dlRes.headers.get('content-type') ?? '';
+    const rawBuffer = Buffer.from(await dlRes.arrayBuffer());
+
+    // iLovePDF returns a ZIP for batch jobs, direct PDF for single-file jobs
+    if (contentType.includes('zip') || contentType.includes('octet-stream')) {
+      try {
+        const zip = await JSZip.loadAsync(rawBuffer);
+        const pdfEntry = Object.values(zip.files).find((f) => f.name.endsWith('.pdf'));
+        if (pdfEntry) {
+          return { buffer: Buffer.from(await pdfEntry.async('arraybuffer')), mime: 'application/pdf', ext: 'pdf' };
+        }
+      } catch {
+        // not a zip — fall through and return as-is
+      }
     }
-    const doc = await this.renderTextAsPdf(text || '(No text content found in presentation)', 'Presentation');
-    return { buffer: this.toBuffer(await doc.save()), mime: 'application/pdf', ext: 'pdf' };
+
+    return { buffer: rawBuffer, mime: 'application/pdf', ext: 'pdf' };
   }
 
   /** RTF → PDF — strips RTF control codes to extract plain text. */
