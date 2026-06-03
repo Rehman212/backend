@@ -1852,11 +1852,68 @@ export class PdfService {
     return { buffer: Buffer.from(saved), mime: 'application/pdf', ext: 'pdf' };
   }
 
-  async unlock(buffer: Buffer): Promise<PdfResult> {
-    // pdf-lib does not support decrypting password-protected PDFs.
-    // ignoreEncryption loads the structure but content remains encrypted.
-    const doc = await PDFDocument.load(buffer, { ignoreEncryption: true });
-    return { buffer: this.toBuffer(await doc.save()), mime: 'application/pdf', ext: 'pdf' };
+  async unlock(buffer: Buffer, password?: string): Promise<PdfResult> {
+    const publicKey = process.env.ILOVEPDF_PUBLIC_KEY;
+    if (!publicKey) throw new Error('ILOVEPDF_PUBLIC_KEY is not set');
+
+    /* 1. Auth */
+    const authRes = await fetch('https://api.ilovepdf.com/v1/auth', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ public_key: publicKey }),
+    });
+    if (!authRes.ok) throw new Error(`iLovePDF auth failed: ${await authRes.text()}`);
+    const { token } = await authRes.json() as { token: string };
+
+    /* 2. Start unlock task */
+    const startRes = await fetch('https://api.ilovepdf.com/v1/start/unlock', {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!startRes.ok) throw new Error(`iLovePDF start failed: ${await startRes.text()}`);
+    const { server, task } = await startRes.json() as { server: string; task: string };
+
+    /* 3. Upload file */
+    const ab = new ArrayBuffer(buffer.byteLength);
+    new Uint8Array(ab).set(buffer);
+    const uploadForm = new FormData();
+    uploadForm.append('task', task);
+    uploadForm.append('file', new Blob([ab], { type: 'application/pdf' }), 'document.pdf');
+    const uploadRes = await fetch(`https://${server}/v1/upload`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+      body: uploadForm,
+    });
+    if (!uploadRes.ok) throw new Error(`iLovePDF upload failed: ${await uploadRes.text()}`);
+    const { server_filename } = await uploadRes.json() as { server_filename: string };
+
+    /* 4. Process */
+    const processBody: Record<string, any> = {
+      task,
+      tool: 'unlock',
+      files: [{ server_filename, filename: 'document.pdf' }],
+    };
+    if (password) processBody.password = password;
+    const processRes = await fetch(`https://${server}/v1/process`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(processBody),
+    });
+    if (!processRes.ok) throw new Error(`iLovePDF process failed: ${await processRes.text()}`);
+
+    /* 5. Download — detect ZIP by magic bytes */
+    const downloadRes = await fetch(`https://${server}/v1/download/${task}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!downloadRes.ok) throw new Error(`iLovePDF download failed: ${await downloadRes.text()}`);
+    const rawBuf = Buffer.from(await downloadRes.arrayBuffer());
+    const isZip  = rawBuf[0] === 0x50 && rawBuf[1] === 0x4B && rawBuf[2] === 0x03 && rawBuf[3] === 0x04;
+    if (isZip) {
+      const zip = await JSZip.loadAsync(rawBuf);
+      const pdfEntry = Object.values(zip.files).find(f => f.name.endsWith('.pdf'));
+      if (pdfEntry) return { buffer: Buffer.from(await pdfEntry.async('arraybuffer')), mime: 'application/pdf', ext: 'pdf' };
+      throw new Error('iLovePDF returned a ZIP with no PDF inside');
+    }
+    return { buffer: rawBuf, mime: 'application/pdf', ext: 'pdf' };
   }
 
   async redact(

@@ -790,7 +790,7 @@ export class PdfController {
   ) {
     if (!file) return this.err(res, 400, 'No file uploaded.');
     try {
-      this.reply(res, await this.svc.unlock(file.buffer), this.baseName(file.originalname));
+      this.reply(res, await this.svc.unlock(file.buffer, body.password), this.baseName(file.originalname));
     } catch (e) {
       this.err(res, 500, (e as Error).message);
     }
