@@ -2263,6 +2263,23 @@ export class PdfService {
     return { buffer: this.toBuffer(await doc.save()), mime: 'application/pdf', ext: 'pdf' };
   }
 
+  /** Return all form fields with type, current value, and options (for dropdowns/radio). */
+  async getFormFields(buffer: Buffer): Promise<Array<{
+    name: string; type: string; value: string; options: string[];
+  }>> {
+    const doc    = await PDFDocument.load(buffer, { ignoreEncryption: true });
+    const form   = doc.getForm();
+    return form.getFields().map(f => {
+      let value   = '';
+      let options: string[] = [];
+      if (f instanceof PDFTextField)  { value = f.getText() ?? ''; }
+      if (f instanceof PDFCheckBox)   { value = String(f.isChecked()); }
+      if (f instanceof PDFDropdown)   { value = f.getSelected().join(', '); options = f.getOptions(); }
+      if (f instanceof PDFRadioGroup) { value = f.getSelected() ?? '';     options = f.getOptions(); }
+      return { name: f.getName(), type: f.constructor.name, value, options };
+    });
+  }
+
   /** Export all form field values as JSON or CSV. */
   async exportFormData(buffer: Buffer, format: string): Promise<PdfResult> {
     const doc    = await PDFDocument.load(buffer, { ignoreEncryption: true });

@@ -1032,6 +1032,18 @@ export class PdfController {
     }
   }
 
+  @Post('form-fields')
+  @UseInterceptors(FileInterceptor('file'))
+  async getFormFields(@UploadedFile() file: MFile, @Res() res: Response) {
+    if (!file) return this.err(res, 400, 'No file uploaded.');
+    try {
+      const fields = await this.svc.getFormFields(file.buffer);
+      res.status(HttpStatus.OK).json(fields);
+    } catch (e) {
+      this.err(res, 500, (e as Error).message);
+    }
+  }
+
   @Post('export-form-data')
   @UseInterceptors(FileInterceptor('file'))
   async exportFormData(
