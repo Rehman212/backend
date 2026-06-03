@@ -1806,8 +1806,20 @@ export class PdfService {
       headers: { Authorization: `Bearer ${token}` },
     });
     if (!downloadRes.ok) throw new Error(`iLovePDF download failed: ${await downloadRes.text()}`);
-    const resultBuf = Buffer.from(await downloadRes.arrayBuffer());
-    return { buffer: resultBuf, mime: 'application/pdf', ext: 'pdf' };
+    const contentType = downloadRes.headers.get('content-type') ?? '';
+    const rawBuf = Buffer.from(await downloadRes.arrayBuffer());
+
+    /* iLovePDF may return a ZIP for some tasks — extract the PDF inside */
+    if (contentType.includes('zip') || contentType.includes('octet-stream')) {
+      try {
+        const zip = await JSZip.loadAsync(rawBuf);
+        const pdfEntry = Object.values(zip.files).find(f => f.name.endsWith('.pdf'));
+        if (pdfEntry) {
+          return { buffer: Buffer.from(await pdfEntry.async('arraybuffer')), mime: 'application/pdf', ext: 'pdf' };
+        }
+      } catch { /* fall through and return raw buffer */ }
+    }
+    return { buffer: rawBuf, mime: 'application/pdf', ext: 'pdf' };
   }
 
   async setPermissions(
