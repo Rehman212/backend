@@ -263,7 +263,7 @@ export class PdfService {
             font_size:       el.font_size  ?? 14,
             font_color:      color,          // keep '#' prefix — iLovePDF expects it
             opacity:         el.opacity    ?? 100,
-            underline_text:  !!el.underline,
+            underline_text:  el.underline ? 1 : 0,   // iLovePDF requires number not boolean
             text_align:     'left',
             rotation:        el.rotation   ?? 0,
           };
