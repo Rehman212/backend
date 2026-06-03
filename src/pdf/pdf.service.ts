@@ -153,18 +153,40 @@ export class PdfService {
   async editPdfMulti(
     buffer: Buffer,
     elements: Array<{
-      type?: 'text' | 'erase';
+      type?: 'text' | 'erase' | 'highlight';
       text?: string; page: number; x: number; y: number;
       font_size?: number; font_color?: string; opacity?: number; rotation?: number;
       width?: number; height?: number;
+      underline?: boolean;
+      color?: string; // for highlight
     }>,
   ): Promise<PdfResult> {
-    const textEls  = elements.filter(e => !e.type || e.type === 'text');
-    const eraseEls = elements.filter(e => e.type === 'erase');
+    const textEls      = elements.filter(e => !e.type || e.type === 'text');
+    const eraseEls     = elements.filter(e => e.type === 'erase');
+    const highlightEls = elements.filter(e => e.type === 'highlight');
 
     let current = buffer;
 
-    /* ── Step 1: white-rectangle erasing via pdf-lib ─────────────────────── */
+    /* ── Step 1: highlight rectangles via pdf-lib ────────────────────────── */
+    if (highlightEls.length > 0) {
+      const doc   = await PDFDocument.load(current, { ignoreEncryption: true });
+      const pages = doc.getPages();
+      for (const el of highlightEls) {
+        const pi   = Math.max(0, Math.min((el.page ?? 1) - 1, pages.length - 1));
+        const page = pages[pi];
+        page.drawRectangle({
+          x: el.x, y: el.y,
+          width:  el.width  ?? 100,
+          height: el.height ?? 20,
+          color:   this.hexToColor(el.color || '#ffff00'),
+          opacity: (el.opacity ?? 50) / 100,
+          borderWidth: 0,
+        });
+      }
+      current = this.toBuffer(await doc.save());
+    }
+
+    /* ── Step 2: white-rectangle erasing via pdf-lib ─────────────────────── */
     if (eraseEls.length > 0) {
       const doc   = await PDFDocument.load(current, { ignoreEncryption: true });
       const pages = doc.getPages();
@@ -234,7 +256,7 @@ export class PdfService {
           return {
             type:              'text',
             text:               el.text || '',
-            pages:             { ranges: [{ start: el.page ?? 1, end: el.page ?? 1 }], rangeType: 'fixed' },
+            pages:              String(el.page ?? 1),
             position:          { x: el.x, y: pageH - el.y },
             font_family:       'Arial',
             font_style:        'Regular',
@@ -243,7 +265,7 @@ export class PdfService {
             opacity:            el.opacity    ?? 100,
             font_weight:        400,
             font_style_italic:  false,
-            text_decoration:   'null',
+            text_decoration:    el.underline ? 'underline' : 'null',
             align:             'left',
             rotation:           el.rotation   ?? 0,
           };
@@ -291,14 +313,25 @@ export class PdfService {
         for (const el of textEls) {
           const pi   = Math.max(0, Math.min((el.page ?? 1) - 1, pages.length - 1));
           const page = pages[pi];
+          const fs = el.font_size ?? 14;
           page.drawText(el.text || '', {
             x: el.x, y: el.y,
-            size:    el.font_size  ?? 14,
+            size:    fs,
             font,
             color:   this.hexToColor(el.font_color || '#000000'),
             opacity: Math.max(0, Math.min(100, el.opacity ?? 100)) / 100,
             rotate:  degrees(el.rotation ?? 0),
           });
+          if (el.underline && el.text) {
+            const tw = font.widthOfTextAtSize(el.text, fs);
+            page.drawLine({
+              start: { x: el.x,      y: el.y - 1 },
+              end:   { x: el.x + tw, y: el.y - 1 },
+              thickness: Math.max(1, fs / 14),
+              color:   this.hexToColor(el.font_color || '#000000'),
+              opacity: Math.max(0, Math.min(100, el.opacity ?? 100)) / 100,
+            });
+          }
         }
         current = this.toBuffer(await doc.save());
       }
@@ -664,8 +697,50 @@ export class PdfService {
 
     await worker.terminate();
 
-    const fullText = pageTexts.join('\n\n');
-    return { buffer: Buffer.from(fullText, 'utf-8'), mime: 'text/plain', ext: 'txt' };
+    // Build a PDF with the extracted text
+    const pdfDoc = await PDFDocument.create();
+    const font   = await pdfDoc.embedFont(StandardFonts.Helvetica);
+    const FONT_SIZE = 11;
+    const MARGIN    = 50;
+    const LINE_H    = FONT_SIZE * 1.4;
+
+    for (let pi = 0; pi < pageTexts.length; pi++) {
+      const text  = pageTexts[pi];
+      const lines = text.split('\n');
+
+      // Estimate required height and break across pages if needed
+      let pageLines: string[] = [];
+      const PAGE_W = 595, PAGE_H = 842; // A4
+      const maxLines = Math.floor((PAGE_H - MARGIN * 2) / LINE_H);
+
+      let chunk: string[] = [];
+      for (const line of lines) {
+        chunk.push(line);
+        if (chunk.length >= maxLines) {
+          pageLines = chunk;
+          const pg = pdfDoc.addPage([PAGE_W, PAGE_H]);
+          let y = PAGE_H - MARGIN;
+          for (const l of pageLines) {
+            pg.drawText(l.slice(0, 100), { x: MARGIN, y, size: FONT_SIZE, font, color: rgb(0, 0, 0) });
+            y -= LINE_H;
+          }
+          chunk = [];
+        }
+      }
+      // remaining lines
+      if (chunk.length > 0) {
+        const pg = pdfDoc.addPage([PAGE_W, PAGE_H]);
+        let y = PAGE_H - MARGIN;
+        for (const l of chunk) {
+          pg.drawText(l.slice(0, 100), { x: MARGIN, y, size: FONT_SIZE, font, color: rgb(0, 0, 0) });
+          y -= LINE_H;
+        }
+      }
+    }
+
+    if (pdfDoc.getPageCount() === 0) pdfDoc.addPage([595, 842]);
+    const pdfBytes = await pdfDoc.save();
+    return { buffer: Buffer.from(pdfBytes), mime: 'application/pdf', ext: 'pdf' };
   }
 
   async pdfToExcel(pdfBuffer: Buffer, docTitle = 'Sheet1'): Promise<PdfResult> {
