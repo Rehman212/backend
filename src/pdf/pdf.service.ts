@@ -1771,9 +1771,11 @@ export class PdfService {
     const { server, task } = await startRes.json() as { server: string; task: string };
 
     /* 3. Upload file */
+    const ab = new ArrayBuffer(buffer.byteLength);
+    new Uint8Array(ab).set(buffer);
     const uploadForm = new FormData();
     uploadForm.append('task', task);
-    uploadForm.append('file', new Blob([buffer], { type: 'application/pdf' }), 'document.pdf');
+    uploadForm.append('file', new Blob([ab], { type: 'application/pdf' }), 'document.pdf');
     const uploadRes = await fetch(`https://${server}/v1/upload`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}` },
