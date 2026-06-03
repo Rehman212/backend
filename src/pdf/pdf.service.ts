@@ -250,24 +250,22 @@ export class PdfService {
          *    → ilovepdfY = pageHeight - element.y
          */
         const ilovepdfElements = textEls.map(el => {
-          const pi     = Math.max(0, Math.min((el.page ?? 1) - 1, pageDims.length - 1));
-          const pageH  = pageDims[pi]?.h ?? 842;
-          const color  = (el.font_color ?? '#000000').replace('#', '');
+          const pi    = Math.max(0, Math.min((el.page ?? 1) - 1, pageDims.length - 1));
+          const pageH = pageDims[pi]?.h ?? 842;
+          const color = el.font_color ?? '#000000';
           return {
-            type:              'text',
-            text:               el.text || '',
-            pages:              String(el.page ?? 1),
-            position:          { x: el.x, y: pageH - el.y },
-            font_family:       'Arial',
-            font_style:        'Regular',
-            font_size:          el.font_size  ?? 14,
-            font_color:         color,
-            opacity:            el.opacity    ?? 100,
-            font_weight:        400,
-            font_style_italic:  false,
-            text_decoration:    el.underline ? 'underline' : 'null',
-            align:             'left',
-            rotation:           el.rotation   ?? 0,
+            type:           'text',
+            text:            el.text || '',
+            pages:           String(el.page ?? 1),
+            coordinates:    { x: el.x, y: pageH - el.y },
+            font_family:    'Arial Unicode MS',
+            font_style:     'Regular',
+            font_size:       el.font_size  ?? 14,
+            font_color:      color,          // keep '#' prefix — iLovePDF expects it
+            opacity:         el.opacity    ?? 100,
+            underline_text:  !!el.underline,
+            text_align:     'left',
+            rotation:        el.rotation   ?? 0,
           };
         });
 
