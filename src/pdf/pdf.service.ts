@@ -1806,18 +1806,17 @@ export class PdfService {
       headers: { Authorization: `Bearer ${token}` },
     });
     if (!downloadRes.ok) throw new Error(`iLovePDF download failed: ${await downloadRes.text()}`);
-    const contentType = downloadRes.headers.get('content-type') ?? '';
     const rawBuf = Buffer.from(await downloadRes.arrayBuffer());
 
-    /* iLovePDF may return a ZIP for some tasks — extract the PDF inside */
-    if (contentType.includes('zip') || contentType.includes('octet-stream')) {
-      try {
-        const zip = await JSZip.loadAsync(rawBuf);
-        const pdfEntry = Object.values(zip.files).find(f => f.name.endsWith('.pdf'));
-        if (pdfEntry) {
-          return { buffer: Buffer.from(await pdfEntry.async('arraybuffer')), mime: 'application/pdf', ext: 'pdf' };
-        }
-      } catch { /* fall through and return raw buffer */ }
+    /* Detect by magic bytes: ZIP starts with PK\x03\x04 (0x50 0x4B 0x03 0x04) */
+    const isZip = rawBuf[0] === 0x50 && rawBuf[1] === 0x4B && rawBuf[2] === 0x03 && rawBuf[3] === 0x04;
+    if (isZip) {
+      const zip = await JSZip.loadAsync(rawBuf);
+      const pdfEntry = Object.values(zip.files).find(f => f.name.endsWith('.pdf'));
+      if (pdfEntry) {
+        return { buffer: Buffer.from(await pdfEntry.async('arraybuffer')), mime: 'application/pdf', ext: 'pdf' };
+      }
+      throw new Error('iLovePDF returned a ZIP with no PDF inside');
     }
     return { buffer: rawBuf, mime: 'application/pdf', ext: 'pdf' };
   }
