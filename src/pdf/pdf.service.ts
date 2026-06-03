@@ -1751,23 +1751,61 @@ export class PdfService {
     userPassword: string,
     ownerPassword?: string,
   ): Promise<PdfResult> {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { PDFDocument: EncPDFDoc } = require('@cantoo/pdf-lib') as typeof import('@cantoo/pdf-lib');
-    const doc   = await EncPDFDoc.load(buffer);
-    const saved = await (doc.save as (opts: any) => Promise<Uint8Array>)({
-      userPassword,
-      ownerPassword: ownerPassword || userPassword,
-      permissions: {
-        printing:             'highResolution',
-        modifying:            false,
-        copying:              false,
-        annotating:           false,
-        fillingForms:         false,
-        contentAccessibility: false,
-        documentAssembly:     false,
-      },
+    const publicKey = process.env.ILOVEPDF_PUBLIC_KEY;
+    if (!publicKey) throw new Error('ILOVEPDF_PUBLIC_KEY is not set');
+
+    /* 1. Auth */
+    const authRes = await fetch('https://api.ilovepdf.com/v1/auth', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ public_key: publicKey }),
     });
-    return { buffer: Buffer.from(saved), mime: 'application/pdf', ext: 'pdf' };
+    if (!authRes.ok) throw new Error(`iLovePDF auth failed: ${await authRes.text()}`);
+    const { token } = await authRes.json() as { token: string };
+
+    /* 2. Start protect task */
+    const startRes = await fetch('https://api.ilovepdf.com/v1/start/protect', {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!startRes.ok) throw new Error(`iLovePDF start failed: ${await startRes.text()}`);
+    const { server, task } = await startRes.json() as { server: string; task: string };
+
+    /* 3. Upload file */
+    const uploadForm = new FormData();
+    uploadForm.append('task', task);
+    uploadForm.append('file', new Blob([buffer], { type: 'application/pdf' }), 'document.pdf');
+    const uploadRes = await fetch(`https://${server}/v1/upload`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+      body: uploadForm,
+    });
+    if (!uploadRes.ok) throw new Error(`iLovePDF upload failed: ${await uploadRes.text()}`);
+    const { server_filename } = await uploadRes.json() as { server_filename: string };
+
+    /* 4. Process */
+    const processBody: Record<string, any> = {
+      task,
+      tool: 'protect',
+      files: [{ server_filename, filename: 'document.pdf' }],
+      password: userPassword,
+    };
+    const processRes = await fetch(`https://${server}/v1/process`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(processBody),
+    });
+    if (!processRes.ok) throw new Error(`iLovePDF process failed: ${await processRes.text()}`);
+
+    /* 5. Download */
+    const downloadRes = await fetch(`https://${server}/v1/download/${task}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!downloadRes.ok) throw new Error(`iLovePDF download failed: ${await downloadRes.text()}`);
+    const resultBuf = Buffer.from(await downloadRes.arrayBuffer());
+    return { buffer: resultBuf, mime: 'application/pdf', ext: 'pdf' };
   }
 
   async setPermissions(
