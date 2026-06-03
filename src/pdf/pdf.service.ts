@@ -2233,7 +2233,7 @@ export class PdfService {
 
   /** Fill existing form fields by name→value map. */
   async fillForm(buffer: Buffer, dataJson: string, flatten: boolean): Promise<PdfResult> {
-    const doc  = await PDFDocument.load(buffer, { ignoreEncryption: true });
+    const doc  = await PDFDocument.load(this.normalizePdfBuffer(buffer), { ignoreEncryption: true });
     const form = doc.getForm();
 
     let data: Record<string, unknown>;
@@ -2263,11 +2263,19 @@ export class PdfService {
     return { buffer: this.toBuffer(await doc.save()), mime: 'application/pdf', ext: 'pdf' };
   }
 
+  /** Strip any garbage bytes that appear before the %PDF- header (some PDFs have preambles). */
+  private normalizePdfBuffer(buffer: Buffer): Buffer {
+    const idx = buffer.indexOf('%PDF-');
+    if (idx < 0) throw new BadRequestException('Uploaded file does not appear to be a valid PDF (no %PDF- header found).');
+    return idx === 0 ? buffer : buffer.slice(idx);
+  }
+
   /** Return all form fields with type, current value, and options (for dropdowns/radio). */
   async getFormFields(buffer: Buffer): Promise<Array<{
     name: string; type: string; value: string; options: string[];
   }>> {
-    const doc    = await PDFDocument.load(buffer, { ignoreEncryption: true });
+    const clean  = this.normalizePdfBuffer(buffer);
+    const doc    = await PDFDocument.load(clean, { ignoreEncryption: true });
     const form   = doc.getForm();
     return form.getFields().map(f => {
       let value   = '';
@@ -2282,7 +2290,7 @@ export class PdfService {
 
   /** Export all form field values as JSON or CSV. */
   async exportFormData(buffer: Buffer, format: string): Promise<PdfResult> {
-    const doc    = await PDFDocument.load(buffer, { ignoreEncryption: true });
+    const doc    = await PDFDocument.load(this.normalizePdfBuffer(buffer), { ignoreEncryption: true });
     const form   = doc.getForm();
     const fields = form.getFields();
 
