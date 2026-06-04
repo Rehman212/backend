@@ -2823,62 +2823,71 @@ export class PdfService {
 
   /** DXF / DWG / DWF → PDF.
    *  DXF:       parsed with dxf-parser and rendered with pdf-lib.
-   *  DWG / DWF: dwg2dxf (libredwg-tools) → DXF parser (primary path)
-   *             LibreOffice headless → PDF (fallback)
+   *  DWG / DWF: CloudConvert API (CLOUDCONVERT_API_KEY required).
    */
   async cadToPdf(buffer: Buffer, ext: string): Promise<PdfResult> {
     const normalExt = ext.toLowerCase();
 
-    /* ── DWG / DWF ──────────────────────────────────────────────────────────── */
+    /* ── DWG / DWF ── CloudConvert API ──────────────────────────────────────── */
     if (normalExt === 'dwg' || normalExt === 'dwf') {
-      const execAsync = promisify(exec);
-      const id      = `cad_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-      const workDir = path.join(os.tmpdir(), id);
-      const inFile  = path.join(workDir, `input.${normalExt}`);
+      const apiKey = process.env.CLOUDCONVERT_API_KEY;
+      if (!apiKey) throw new Error('CLOUDCONVERT_API_KEY is not set in environment.');
 
-      try {
-        await fs.promises.mkdir(workDir, { recursive: true });
-        await fs.promises.writeFile(inFile, buffer);
+      const BASE = 'https://api.cloudconvert.com/v2';
 
-        /* ── Path 1: dwg2dxf (libredwg-tools) → our DXF parser ── */
-        if (normalExt === 'dwg') {
-          try {
-            const outDxf = path.join(workDir, 'input.dxf');
-            // dwg2dxf writes <input>.dxf in the same directory by default
-            await execAsync(`dwg2dxf "${inFile}"`, { timeout: 60000 });
-            const dxfBuf = await fs.promises.readFile(outDxf);
-            return await this.cadToPdf(dxfBuf, 'dxf');
-          } catch { /* fall through to LibreOffice */ }
+      /* 1. Create job with upload → convert → export tasks */
+      const jobRes = await fetch(`${BASE}/jobs`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          tasks: {
+            'upload-file':   { operation: 'import/upload' },
+            'convert-file':  { operation: 'convert', input: 'upload-file', output_format: 'pdf' },
+            'export-file':   { operation: 'export/url', input: 'convert-file' },
+          },
+        }),
+      });
+      if (!jobRes.ok) throw new Error(`CloudConvert create job failed: ${await jobRes.text()}`);
+      const job = await jobRes.json() as any;
+
+      const uploadTask = job.data.tasks.find((t: any) => t.name === 'upload-file');
+      if (!uploadTask?.result?.form?.url) throw new Error('CloudConvert did not return an upload URL.');
+
+      /* 2. Upload the file */
+      const { url: uploadUrl, parameters: formParams } = uploadTask.result.form;
+      const formData = new FormData();
+      for (const [k, v] of Object.entries(formParams as Record<string, string>)) formData.append(k, v);
+      const ab = new ArrayBuffer(buffer.byteLength);
+      new Uint8Array(ab).set(buffer);
+      formData.append('file', new Blob([ab], { type: 'application/octet-stream' }), `input.${normalExt}`);
+      const uploadRes = await fetch(uploadUrl, { method: 'POST', body: formData });
+      if (!uploadRes.ok) throw new Error(`CloudConvert upload failed: ${await uploadRes.text()}`);
+
+      /* 3. Poll job until finished */
+      const jobId = job.data.id;
+      let exportTask: any = null;
+      for (let i = 0; i < 60; i++) {
+        await new Promise(r => setTimeout(r, 2000));
+        const pollRes = await fetch(`${BASE}/jobs/${jobId}`, {
+          headers: { Authorization: `Bearer ${apiKey}` },
+        });
+        if (!pollRes.ok) throw new Error(`CloudConvert poll failed: ${await pollRes.text()}`);
+        const pollData = await pollRes.json() as any;
+        const status   = pollData.data.status;
+        if (status === 'error') throw new Error(`CloudConvert conversion failed: ${JSON.stringify(pollData.data)}`);
+        if (status === 'finished') {
+          exportTask = pollData.data.tasks.find((t: any) => t.name === 'export-file');
+          break;
         }
-
-        /* ── Path 2: LibreOffice headless ── */
-        const loProfile = path.join(workDir, 'lo_profile');
-        const outPdf    = path.join(workDir, 'input.pdf');
-        const loFlags   = [
-          '--headless', '--norestore', '--nologo',
-          `-env:UserInstallation=file://${loProfile}`,
-          '--convert-to pdf',
-          `--outdir "${workDir}"`,
-          `"${inFile}"`,
-        ].join(' ');
-
-        let loError = '';
-        for (const bin of ['soffice', 'libreoffice']) {
-          try { await execAsync(`${bin} ${loFlags}`, { timeout: 120000 }); loError = ''; break; }
-          catch (e) { loError = (e as Error).message; }
-        }
-        if (loError) throw new Error(`Could not convert .${normalExt}: ${loError}`);
-
-        if (!fs.existsSync(outPdf)) {
-          throw new Error(
-            `No output produced for .${normalExt}. ` +
-            `Install libredwg-tools for better DWG support: sudo apt-get install -y libredwg-tools`,
-          );
-        }
-        return { buffer: await fs.promises.readFile(outPdf), mime: 'application/pdf', ext: 'pdf' };
-      } finally {
-        try { await fs.promises.rm(workDir, { recursive: true, force: true }); } catch { /* ignore */ }
       }
+      if (!exportTask) throw new Error('CloudConvert job timed out.');
+
+      /* 4. Download the PDF */
+      const downloadUrl = exportTask.result?.files?.[0]?.url;
+      if (!downloadUrl) throw new Error('CloudConvert did not return a download URL.');
+      const dlRes = await fetch(downloadUrl);
+      if (!dlRes.ok) throw new Error(`CloudConvert download failed: ${await dlRes.text()}`);
+      return { buffer: Buffer.from(await dlRes.arrayBuffer()), mime: 'application/pdf', ext: 'pdf' };
     }
 
     if (normalExt !== 'dxf') {
