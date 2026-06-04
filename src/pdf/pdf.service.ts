@@ -2822,58 +2822,61 @@ export class PdfService {
   }
 
   /** DXF / DWG / DWF → PDF.
-   *  DXF: parsed with dxf-parser and rendered with pdf-lib.
-   *  DWG / DWF: converted via LibreOffice headless (must be installed on the server).
+   *  DXF:       parsed with dxf-parser and rendered with pdf-lib.
+   *  DWG / DWF: dwg2dxf (libredwg-tools) → DXF parser (primary path)
+   *             LibreOffice headless → PDF (fallback)
    */
   async cadToPdf(buffer: Buffer, ext: string): Promise<PdfResult> {
     const normalExt = ext.toLowerCase();
 
-    /* ── DWG / DWF ─ use LibreOffice headless ──────────────────────────────── */
+    /* ── DWG / DWF ──────────────────────────────────────────────────────────── */
     if (normalExt === 'dwg' || normalExt === 'dwf') {
       const execAsync = promisify(exec);
-      const id        = `cad_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-      const workDir   = path.join(os.tmpdir(), id);
-      const inFile    = path.join(workDir, `input.${normalExt}`);
-      const outBase   = path.join(workDir, 'input.pdf');
-      /* Each conversion gets its own LO user-profile dir to avoid lock conflicts
-         when the process runs as a daemon (PM2) with no real HOME directory.    */
-      const loProfile = path.join(workDir, 'lo_profile');
+      const id      = `cad_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+      const workDir = path.join(os.tmpdir(), id);
+      const inFile  = path.join(workDir, `input.${normalExt}`);
 
       try {
         await fs.promises.mkdir(workDir, { recursive: true });
         await fs.promises.writeFile(inFile, buffer);
 
-        const loFlags = [
-          '--headless',
-          '--norestore',
-          '--nologo',
+        /* ── Path 1: dwg2dxf (libredwg-tools) → our DXF parser ── */
+        if (normalExt === 'dwg') {
+          try {
+            const outDxf = path.join(workDir, 'input.dxf');
+            // dwg2dxf writes <input>.dxf in the same directory by default
+            await execAsync(`dwg2dxf "${inFile}"`, { timeout: 60000 });
+            const dxfBuf = await fs.promises.readFile(outDxf);
+            return await this.cadToPdf(dxfBuf, 'dxf');
+          } catch { /* fall through to LibreOffice */ }
+        }
+
+        /* ── Path 2: LibreOffice headless ── */
+        const loProfile = path.join(workDir, 'lo_profile');
+        const outPdf    = path.join(workDir, 'input.pdf');
+        const loFlags   = [
+          '--headless', '--norestore', '--nologo',
           `-env:UserInstallation=file://${loProfile}`,
           '--convert-to pdf',
           `--outdir "${workDir}"`,
           `"${inFile}"`,
         ].join(' ');
 
-        try {
-          await execAsync(`soffice ${loFlags}`, { timeout: 120000 });
-        } catch (e1) {
-          try {
-            await execAsync(`libreoffice ${loFlags}`, { timeout: 120000 });
-          } catch (e2) {
-            throw new Error(`LibreOffice failed: ${(e2 as Error).message}`);
-          }
+        let loError = '';
+        for (const bin of ['soffice', 'libreoffice']) {
+          try { await execAsync(`${bin} ${loFlags}`, { timeout: 120000 }); loError = ''; break; }
+          catch (e) { loError = (e as Error).message; }
         }
+        if (loError) throw new Error(`Could not convert .${normalExt}: ${loError}`);
 
-        if (!fs.existsSync(outBase)) {
+        if (!fs.existsSync(outPdf)) {
           throw new Error(
-            `LibreOffice ran but produced no PDF. ` +
-            `Make sure libreoffice-draw is installed: sudo apt-get install -y libreoffice-draw libreoffice-core`,
+            `No output produced for .${normalExt}. ` +
+            `Install libredwg-tools for better DWG support: sudo apt-get install -y libredwg-tools`,
           );
         }
-
-        const pdfBuf = await fs.promises.readFile(outBase);
-        return { buffer: pdfBuf, mime: 'application/pdf', ext: 'pdf' };
+        return { buffer: await fs.promises.readFile(outPdf), mime: 'application/pdf', ext: 'pdf' };
       } finally {
-        // Clean up entire work dir
         try { await fs.promises.rm(workDir, { recursive: true, force: true }); } catch { /* ignore */ }
       }
     }
