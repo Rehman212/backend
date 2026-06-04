@@ -2831,43 +2831,50 @@ export class PdfService {
     /* ── DWG / DWF ─ use LibreOffice headless ──────────────────────────────── */
     if (normalExt === 'dwg' || normalExt === 'dwf') {
       const execAsync = promisify(exec);
-      const tmpDir    = os.tmpdir();
-      const inFile    = path.join(tmpDir, `cad_${Date.now()}.${normalExt}`);
-      const outFile   = path.join(tmpDir, `cad_${Date.now()}.pdf`);
+      const id        = `cad_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+      const workDir   = path.join(os.tmpdir(), id);
+      const inFile    = path.join(workDir, `input.${normalExt}`);
+      const outBase   = path.join(workDir, 'input.pdf');
+      /* Each conversion gets its own LO user-profile dir to avoid lock conflicts
+         when the process runs as a daemon (PM2) with no real HOME directory.    */
+      const loProfile = path.join(workDir, 'lo_profile');
 
       try {
+        await fs.promises.mkdir(workDir, { recursive: true });
         await fs.promises.writeFile(inFile, buffer);
 
-        // LibreOffice converts to the same directory as the input file
-        const outDir  = tmpDir;
-        const outBase = path.join(outDir, path.basename(inFile, `.${normalExt}`) + '.pdf');
+        const loFlags = [
+          '--headless',
+          '--norestore',
+          '--nologo',
+          `-env:UserInstallation=file://${loProfile}`,
+          '--convert-to pdf',
+          `--outdir "${workDir}"`,
+          `"${inFile}"`,
+        ].join(' ');
 
         try {
-          await execAsync(
-            `libreoffice --headless --convert-to pdf --outdir "${outDir}" "${inFile}"`,
-            { timeout: 60000 },
-          );
-        } catch {
-          // soffice alias fallback
-          await execAsync(
-            `soffice --headless --convert-to pdf --outdir "${outDir}" "${inFile}"`,
-            { timeout: 60000 },
-          );
+          await execAsync(`soffice ${loFlags}`, { timeout: 120000 });
+        } catch (e1) {
+          try {
+            await execAsync(`libreoffice ${loFlags}`, { timeout: 120000 });
+          } catch (e2) {
+            throw new Error(`LibreOffice failed: ${(e2 as Error).message}`);
+          }
         }
 
         if (!fs.existsSync(outBase)) {
           throw new Error(
-            `LibreOffice did not produce a PDF for the .${normalExt} file. ` +
-            `Ensure LibreOffice is installed on the server (sudo apt-get install libreoffice).`,
+            `LibreOffice ran but produced no PDF. ` +
+            `Make sure libreoffice-draw is installed: sudo apt-get install -y libreoffice-draw libreoffice-core`,
           );
         }
 
         const pdfBuf = await fs.promises.readFile(outBase);
         return { buffer: pdfBuf, mime: 'application/pdf', ext: 'pdf' };
       } finally {
-        for (const f of [inFile, outFile]) {
-          try { fs.unlinkSync(f); } catch { /* ignore */ }
-        }
+        // Clean up entire work dir
+        try { await fs.promises.rm(workDir, { recursive: true, force: true }); } catch { /* ignore */ }
       }
     }
 
