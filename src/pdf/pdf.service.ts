@@ -2821,14 +2821,58 @@ export class PdfService {
     return { buffer: this.toBuffer(await doc.save()), mime: 'application/pdf', ext: 'pdf' };
   }
 
-  /** DXF → PDF — parses DXF entities and renders them with pdf-lib. DWG returns a clear error. */
+  /** DXF / DWG / DWF → PDF.
+   *  DXF: parsed with dxf-parser and rendered with pdf-lib.
+   *  DWG / DWF: converted via LibreOffice headless (must be installed on the server).
+   */
   async cadToPdf(buffer: Buffer, ext: string): Promise<PdfResult> {
-    if (ext !== 'dxf') {
-      throw new BadRequestException(
-        ext === 'dwg'
-          ? 'DWG format is not supported. Please convert your file to DXF first using AutoCAD ("Save As DXF"), FreeCAD, or LibreCAD ("Export as DXF"), then re-upload the .dxf file.'
-          : `Unsupported CAD format ".${ext}". Only DXF (.dxf) is supported.`,
-      );
+    const normalExt = ext.toLowerCase();
+
+    /* ── DWG / DWF ─ use LibreOffice headless ──────────────────────────────── */
+    if (normalExt === 'dwg' || normalExt === 'dwf') {
+      const execAsync = promisify(exec);
+      const tmpDir    = os.tmpdir();
+      const inFile    = path.join(tmpDir, `cad_${Date.now()}.${normalExt}`);
+      const outFile   = path.join(tmpDir, `cad_${Date.now()}.pdf`);
+
+      try {
+        await fs.promises.writeFile(inFile, buffer);
+
+        // LibreOffice converts to the same directory as the input file
+        const outDir  = tmpDir;
+        const outBase = path.join(outDir, path.basename(inFile, `.${normalExt}`) + '.pdf');
+
+        try {
+          await execAsync(
+            `libreoffice --headless --convert-to pdf --outdir "${outDir}" "${inFile}"`,
+            { timeout: 60000 },
+          );
+        } catch {
+          // soffice alias fallback
+          await execAsync(
+            `soffice --headless --convert-to pdf --outdir "${outDir}" "${inFile}"`,
+            { timeout: 60000 },
+          );
+        }
+
+        if (!fs.existsSync(outBase)) {
+          throw new Error(
+            `LibreOffice did not produce a PDF for the .${normalExt} file. ` +
+            `Ensure LibreOffice is installed on the server (sudo apt-get install libreoffice).`,
+          );
+        }
+
+        const pdfBuf = await fs.promises.readFile(outBase);
+        return { buffer: pdfBuf, mime: 'application/pdf', ext: 'pdf' };
+      } finally {
+        for (const f of [inFile, outFile]) {
+          try { fs.unlinkSync(f); } catch { /* ignore */ }
+        }
+      }
+    }
+
+    if (normalExt !== 'dxf') {
+      throw new BadRequestException(`Unsupported CAD format ".${normalExt}". Supported: dxf, dwg, dwf.`);
     }
 
     // eslint-disable-next-line @typescript-eslint/no-var-requires
