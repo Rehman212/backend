@@ -649,96 +649,70 @@ export class PdfService {
      CONVERT FROM PDF
   ═══════════════════════════════════════════════════════════════════════ */
 
-  async ocrFile(fileBuffer: Buffer, mimeType: string, lang = 'eng'): Promise<PdfResult> {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { createWorker } = require('tesseract.js') as typeof import('tesseract.js');
+  async ocrFile(fileBuffer: Buffer, _mimeType: string, lang = 'eng'): Promise<PdfResult> {
+    const publicKey = process.env.ILOVEPDF_PUBLIC_KEY;
+    if (!publicKey) throw new Error('ILOVEPDF_PUBLIC_KEY is not set in environment.');
 
-    // Collect image buffers to OCR — either the raw image or PDF pages rendered to PNG
-    const imageBuffers: Buffer[] = [];
+    /* 1. Auth */
+    const authRes = await fetch('https://api.ilovepdf.com/v1/auth', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ public_key: publicKey }),
+    });
+    if (!authRes.ok) throw new Error(`iLovePDF auth failed: ${await authRes.text()}`);
+    const { token } = await authRes.json() as { token: string };
 
-    const isPdf = mimeType === 'application/pdf' ||
-                  mimeType === 'application/x-pdf';
+    /* 2. Start ocr task */
+    const startRes = await fetch('https://api.ilovepdf.com/v1/start/ocr', {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!startRes.ok) throw new Error(`iLovePDF start failed: ${await startRes.text()}`);
+    const { server, task } = await startRes.json() as { server: string; task: string };
 
-    if (isPdf) {
-      // Render each PDF page to a PNG using pdfjs-dist + canvas
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const pdfjsLib = require('pdfjs-dist/legacy/build/pdf.js') as any;
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const { createCanvas } = require('canvas') as { createCanvas: (w: number, h: number) => any };
-      pdfjsLib.GlobalWorkerOptions.workerSrc = '';
+    /* 3. Upload file */
+    const ab = new ArrayBuffer(fileBuffer.byteLength);
+    new Uint8Array(ab).set(fileBuffer);
+    const uploadForm = new FormData();
+    uploadForm.append('task', task);
+    uploadForm.append('file', new Blob([ab], { type: 'application/pdf' }), 'document.pdf');
+    const uploadRes = await fetch(`https://${server}/v1/upload`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+      body: uploadForm,
+    });
+    if (!uploadRes.ok) throw new Error(`iLovePDF upload failed: ${await uploadRes.text()}`);
+    const { server_filename } = await uploadRes.json() as { server_filename: string };
 
-      const pdfDoc = await pdfjsLib.getDocument({ data: new Uint8Array(fileBuffer), verbosity: 0 }).promise;
-      const SCALE  = 2; // 2× scale ≈ 144 dpi, better OCR accuracy
+    /* 4. Process */
+    const processRes = await fetch(`https://${server}/v1/process`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        task,
+        tool: 'ocr',
+        files: [{ server_filename, filename: 'document.pdf' }],
+        language: lang,
+      }),
+    });
+    if (!processRes.ok) throw new Error(`iLovePDF process failed: ${await processRes.text()}`);
 
-      for (let i = 1; i <= pdfDoc.numPages; i++) {
-        const page = await pdfDoc.getPage(i);
-        const vp   = page.getViewport({ scale: SCALE });
-        const canvas = createCanvas(Math.round(vp.width), Math.round(vp.height));
-        const ctx    = canvas.getContext('2d');
-        await page.render({ canvasContext: ctx, viewport: vp }).promise;
-        imageBuffers.push(canvas.toBuffer('image/png'));
-      }
-    } else {
-      // Direct image upload
-      imageBuffers.push(fileBuffer);
-    }
+    /* 5. Download */
+    const downloadRes = await fetch(`https://${server}/v1/download/${task}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!downloadRes.ok) throw new Error(`iLovePDF download failed: ${await downloadRes.text()}`);
+    const rawBuf = Buffer.from(await downloadRes.arrayBuffer());
 
-    // OCR each image with tesseract.js
-    const worker = await createWorker(lang);
-    const pageTexts: string[] = [];
-
-    for (let i = 0; i < imageBuffers.length; i++) {
-      const { data } = await worker.recognize(imageBuffers[i]);
-      const pageLabel = imageBuffers.length > 1 ? `--- Page ${i + 1} ---\n` : '';
-      pageTexts.push(pageLabel + (data.text ?? '').trim());
-    }
-
-    await worker.terminate();
-
-    // Build a PDF with the extracted text
-    const pdfDoc = await PDFDocument.create();
-    const font   = await pdfDoc.embedFont(StandardFonts.Helvetica);
-    const FONT_SIZE = 11;
-    const MARGIN    = 50;
-    const LINE_H    = FONT_SIZE * 1.4;
-
-    for (let pi = 0; pi < pageTexts.length; pi++) {
-      const text  = pageTexts[pi];
-      const lines = text.split('\n');
-
-      // Estimate required height and break across pages if needed
-      let pageLines: string[] = [];
-      const PAGE_W = 595, PAGE_H = 842; // A4
-      const maxLines = Math.floor((PAGE_H - MARGIN * 2) / LINE_H);
-
-      let chunk: string[] = [];
-      for (const line of lines) {
-        chunk.push(line);
-        if (chunk.length >= maxLines) {
-          pageLines = chunk;
-          const pg = pdfDoc.addPage([PAGE_W, PAGE_H]);
-          let y = PAGE_H - MARGIN;
-          for (const l of pageLines) {
-            pg.drawText(l.slice(0, 100), { x: MARGIN, y, size: FONT_SIZE, font, color: rgb(0, 0, 0) });
-            y -= LINE_H;
-          }
-          chunk = [];
-        }
-      }
-      // remaining lines
-      if (chunk.length > 0) {
-        const pg = pdfDoc.addPage([PAGE_W, PAGE_H]);
-        let y = PAGE_H - MARGIN;
-        for (const l of chunk) {
-          pg.drawText(l.slice(0, 100), { x: MARGIN, y, size: FONT_SIZE, font, color: rgb(0, 0, 0) });
-          y -= LINE_H;
-        }
+    /* Detect ZIP by magic bytes PK\x03\x04 */
+    const isZip = rawBuf[0] === 0x50 && rawBuf[1] === 0x4B && rawBuf[2] === 0x03 && rawBuf[3] === 0x04;
+    if (isZip) {
+      const zip = await JSZip.loadAsync(rawBuf);
+      const pdfEntry = Object.values(zip.files).find(f => f.name.endsWith('.pdf'));
+      if (pdfEntry) {
+        return { buffer: Buffer.from(await pdfEntry.async('arraybuffer')), mime: 'application/pdf', ext: 'pdf' };
       }
     }
-
-    if (pdfDoc.getPageCount() === 0) pdfDoc.addPage([595, 842]);
-    const pdfBytes = await pdfDoc.save();
-    return { buffer: Buffer.from(pdfBytes), mime: 'application/pdf', ext: 'pdf' };
+    return { buffer: rawBuf, mime: 'application/pdf', ext: 'pdf' };
   }
 
   async pdfToExcel(pdfBuffer: Buffer, docTitle = 'Sheet1'): Promise<PdfResult> {

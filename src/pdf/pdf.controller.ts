@@ -540,7 +540,7 @@ export class PdfController {
   ) {
     if (!file) return this.err(res, 400, 'No file uploaded.');
     try {
-      const lang   = body.lang ?? 'eng';
+      const lang   = body.language ?? body.lang ?? 'eng';
       const result = await this.svc.ocrFile(file.buffer, file.mimetype, lang);
       this.reply(res, result, this.baseName(file.originalname));
     } catch (e) {
