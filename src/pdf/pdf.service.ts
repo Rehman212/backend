@@ -687,7 +687,7 @@ export class PdfService {
       const sy = pdfH / vp.height;
 
       // ── Overlay each recognised word as invisible (opacity 0) text ──────────
-      for (const word of (data.words ?? [])) {
+      for (const word of ((data as any).words ?? [])) {
         if (!word.text?.trim() || word.confidence < 30) continue;
         const { x0, y0, y1 } = word.bbox;
         const wordH = (y1 - y0) * sy;
