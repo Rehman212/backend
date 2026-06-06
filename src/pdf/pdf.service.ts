@@ -650,69 +650,71 @@ export class PdfService {
   ═══════════════════════════════════════════════════════════════════════ */
 
   async ocrFile(fileBuffer: Buffer, _mimeType: string, lang = 'eng'): Promise<PdfResult> {
-    const publicKey = process.env.ILOVEPDF_PUBLIC_KEY;
-    if (!publicKey) throw new Error('ILOVEPDF_PUBLIC_KEY is not set in environment.');
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { createWorker } = require('tesseract.js') as typeof import('tesseract.js');
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const pdfjsLib = require('pdfjs-dist/legacy/build/pdf.js') as any;
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { createCanvas } = require('canvas') as { createCanvas: (w: number, h: number) => any };
 
-    /* 1. Auth */
-    const authRes = await fetch('https://api.ilovepdf.com/v1/auth', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ public_key: publicKey }),
-    });
-    if (!authRes.ok) throw new Error(`iLovePDF auth failed: ${await authRes.text()}`);
-    const { token } = await authRes.json() as { token: string };
+    pdfjsLib.GlobalWorkerOptions.workerSrc = '';
 
-    /* 2. Start ocr task */
-    const startRes = await fetch('https://api.ilovepdf.com/v1/start/ocr', {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    if (!startRes.ok) throw new Error(`iLovePDF start failed: ${await startRes.text()}`);
-    const { server, task } = await startRes.json() as { server: string; task: string };
+    const SCALE = 2; // 144 DPI — better OCR accuracy
 
-    /* 3. Upload file */
-    const ab = new ArrayBuffer(fileBuffer.byteLength);
-    new Uint8Array(ab).set(fileBuffer);
-    const uploadForm = new FormData();
-    uploadForm.append('task', task);
-    uploadForm.append('file', new Blob([ab], { type: 'application/pdf' }), 'document.pdf');
-    const uploadRes = await fetch(`https://${server}/v1/upload`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${token}` },
-      body: uploadForm,
-    });
-    if (!uploadRes.ok) throw new Error(`iLovePDF upload failed: ${await uploadRes.text()}`);
-    const { server_filename } = await uploadRes.json() as { server_filename: string };
+    // ── Load the ORIGINAL PDF with pdf-lib so we can add an invisible text layer ──
+    const pdfDoc = await PDFDocument.load(fileBuffer, { ignoreEncryption: true });
+    const font   = await pdfDoc.embedFont(StandardFonts.Helvetica);
 
-    /* 4. Process */
-    const processRes = await fetch(`https://${server}/v1/process`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        task,
-        tool: 'ocr',
-        files: [{ server_filename, filename: 'document.pdf' }],
-        language: lang,
-      }),
-    });
-    if (!processRes.ok) throw new Error(`iLovePDF process failed: ${await processRes.text()}`);
+    // ── Render each page to PNG for Tesseract using pdfjs ────────────────────────
+    const srcDoc = await pdfjsLib.getDocument({ data: new Uint8Array(fileBuffer), verbosity: 0 }).promise;
+    const worker = await createWorker(lang);
 
-    /* 5. Download */
-    const downloadRes = await fetch(`https://${server}/v1/download/${task}`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    if (!downloadRes.ok) throw new Error(`iLovePDF download failed: ${await downloadRes.text()}`);
-    const rawBuf = Buffer.from(await downloadRes.arrayBuffer());
+    for (let pageNum = 1; pageNum <= srcDoc.numPages; pageNum++) {
+      const srcPage = await srcDoc.getPage(pageNum);
+      const vp      = srcPage.getViewport({ scale: SCALE });
+      const canvas  = createCanvas(Math.round(vp.width), Math.round(vp.height));
+      const ctx     = canvas.getContext('2d');
+      await srcPage.render({ canvasContext: ctx, viewport: vp }).promise;
 
-    /* Detect ZIP by magic bytes PK\x03\x04 */
-    const isZip = rawBuf[0] === 0x50 && rawBuf[1] === 0x4B && rawBuf[2] === 0x03 && rawBuf[3] === 0x04;
-    if (isZip) {
-      const zip = await JSZip.loadAsync(rawBuf);
-      const pdfEntry = Object.values(zip.files).find(f => f.name.endsWith('.pdf'));
-      if (pdfEntry) {
-        return { buffer: Buffer.from(await pdfEntry.async('arraybuffer')), mime: 'application/pdf', ext: 'pdf' };
+      // ── OCR the rendered image ──────────────────────────────────────────────
+      const { data } = await worker.recognize(canvas.toBuffer('image/png'));
+
+      const pdfPage = pdfDoc.getPage(pageNum - 1);
+      const { width: pdfW, height: pdfH } = pdfPage.getSize();
+
+      // Scale: image pixels → PDF points
+      const sx = pdfW / vp.width;
+      const sy = pdfH / vp.height;
+
+      // ── Overlay each recognised word as invisible (opacity 0) text ──────────
+      for (const word of (data.words ?? [])) {
+        if (!word.text?.trim() || word.confidence < 30) continue;
+        const { x0, y0, y1 } = word.bbox;
+        const wordH = (y1 - y0) * sy;
+        if (wordH < 1) continue;
+
+        // PDF origin is bottom-left; Tesseract origin is top-left.
+        // y1 is the bottom edge of the word in pixel (top-down) coords.
+        const pdfX = x0 * sx;
+        const pdfY = Math.max(pdfH - y1 * sy, 0);
+
+        try {
+          pdfPage.drawText(this.sanitizeWinAnsi(word.text.trim()), {
+            x:    pdfX,
+            y:    pdfY,
+            size: Math.max(wordH, 1),
+            font,
+            color:   rgb(0, 0, 0),
+            opacity: 0,   // invisible but still present in content stream → searchable
+          });
+        } catch { /* skip words with unencodable chars */ }
       }
     }
-    return { buffer: rawBuf, mime: 'application/pdf', ext: 'pdf' };
+
+    await worker.terminate();
+
+    // Return the original PDF with the invisible text layer added
+    return { buffer: this.toBuffer(await pdfDoc.save()), mime: 'application/pdf', ext: 'pdf' };
   }
 
   async pdfToExcel(pdfBuffer: Buffer, docTitle = 'Sheet1'): Promise<PdfResult> {
