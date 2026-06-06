@@ -385,52 +385,38 @@ export class ImageService {
   }
 
   /**
-   * Watermark removal using frequency-separation technique:
-   * 1. Extract a smooth "background plate" via heavy Gaussian blur
-   * 2. Blend original + background using opacity to reduce overlay artifacts
-   * 3. Apply normalise + mild sharpening to restore natural look
+   * Watermark removal using luminance-threshold technique:
+   * Pixels above a luminance threshold (light/semi-transparent watermark overlay)
+   * are pushed to white while dark content pixels (photo, text) are left untouched.
+   * strength 30 → threshold ~198  (removes only very light watermarks)
+   * strength 60 → threshold ~174  (standard)
+   * strength 85 → threshold ~154  (aggressive, removes heavier watermarks)
    */
   async removeWatermark(buffer: Buffer, strength = 60): Promise<ImageResult> {
     const pct = Math.max(10, Math.min(100, strength)) / 100;
+    // Luminance threshold: high-luminance pixels are treated as watermark
+    const threshold = Math.round(210 - pct * 60);
 
-    // Get image dimensions
-    const meta = await (sharp)(buffer).metadata();
-    const w = meta.width as number;
-    const h = meta.height as number;
-
-    // Step 1: create a heavily blurred "background plate"
-    const blurSigma = Math.max(5, Math.round(Math.min(w, h) * 0.03));
-    const bgPlate = await (sharp)(buffer)
-      .blur(blurSigma)
+    const { data, info } = await (sharp)(buffer)
+      .ensureAlpha()
       .raw()
       .toBuffer({ resolveWithObject: true });
 
-    // Step 2: get original as raw
-    const orig = await (sharp)(buffer)
-      .ensureAlpha(1)
-      .raw()
-      .toBuffer({ resolveWithObject: true });
-
-    // Step 3: blend — for each pixel: result = orig * (1-pct) + bg * pct
-    // This suppresses semi-transparent overlays while preserving photo content
-    const blendBuf = Buffer.alloc(orig.data.length);
-    const bgRaw = await (sharp)(buffer)
-      .blur(blurSigma)
-      .ensureAlpha(1)
-      .raw()
-      .toBuffer();
-
-    for (let i = 0; i < orig.data.length; i++) {
-      blendBuf[i] = Math.round(orig.data[i] * (1 - pct) + bgRaw[i] * pct);
+    const channels: number = info.channels; // always 4 after ensureAlpha
+    for (let p = 0; p < data.length; p += channels) {
+      const lum = data[p] * 0.299 + data[p + 1] * 0.587 + data[p + 2] * 0.114;
+      if (lum > threshold) {
+        data[p]     = 255;
+        data[p + 1] = 255;
+        data[p + 2] = 255;
+        data[p + 3] = 255;
+      }
     }
 
-    // Step 4: reconstruct from raw + post-process
-    const channels = (orig.info.channels as number);
-    const out = await (sharp)(blendBuf, {
-      raw: { width: w, height: h, channels: channels as 1|2|3|4 },
+    const out = await (sharp)(data, {
+      raw: { width: info.width, height: info.height, channels: channels as 1|2|3|4 },
     })
-      .normalise()
-      .sharpen({ sigma: 0.6, m1: 0.5, m2: 0.6 })
+      .flatten({ background: '#ffffff' })
       .jpeg({ quality: 93 })
       .toBuffer();
 
