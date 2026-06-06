@@ -335,6 +335,22 @@ export class PdfController {
     }
   }
 
+  @Post('cad-preview')
+  @UseInterceptors(FileInterceptor('file'))
+  async cadPreview(@UploadedFile() file: MFile, @Res() res: Response) {
+    if (!file) return this.err(res, 400, 'No file uploaded.');
+    try {
+      const ext    = (file.originalname ?? '').split('.').pop()?.toLowerCase() ?? '';
+      const result = await this.svc.cadPreview(file.buffer, ext);
+      res.status(HttpStatus.OK)
+        .setHeader('Content-Type', result.mime)
+        .setHeader('Cache-Control', 'no-store')
+        .send(result.buffer);
+    } catch (e) {
+      this.err(res, 500, (e as Error).message);
+    }
+  }
+
   /* ═══════════════════════════════════════════════════════════════════════
      CONVERT FROM PDF
   ═══════════════════════════════════════════════════════════════════════ */

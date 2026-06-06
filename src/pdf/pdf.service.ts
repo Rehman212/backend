@@ -2830,64 +2830,8 @@ export class PdfService {
 
     /* ── DWG / DWF ── CloudConvert API ──────────────────────────────────────── */
     if (normalExt === 'dwg' || normalExt === 'dwf') {
-      const apiKey = process.env.CLOUDCONVERT_API_KEY;
-      if (!apiKey) throw new Error('CLOUDCONVERT_API_KEY is not set in environment.');
-
-      const BASE = 'https://api.cloudconvert.com/v2';
-
-      /* 1. Create job with upload → convert → export tasks */
-      const jobRes = await fetch(`${BASE}/jobs`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          tasks: {
-            'upload-file':   { operation: 'import/upload' },
-            'convert-file':  { operation: 'convert', input: 'upload-file', output_format: 'pdf' },
-            'export-file':   { operation: 'export/url', input: 'convert-file' },
-          },
-        }),
-      });
-      if (!jobRes.ok) throw new Error(`CloudConvert create job failed: ${await jobRes.text()}`);
-      const job = await jobRes.json() as any;
-
-      const uploadTask = job.data.tasks.find((t: any) => t.name === 'upload-file');
-      if (!uploadTask?.result?.form?.url) throw new Error('CloudConvert did not return an upload URL.');
-
-      /* 2. Upload the file */
-      const { url: uploadUrl, parameters: formParams } = uploadTask.result.form;
-      const formData = new FormData();
-      for (const [k, v] of Object.entries(formParams as Record<string, string>)) formData.append(k, v);
-      const ab = new ArrayBuffer(buffer.byteLength);
-      new Uint8Array(ab).set(buffer);
-      formData.append('file', new Blob([ab], { type: 'application/octet-stream' }), `input.${normalExt}`);
-      const uploadRes = await fetch(uploadUrl, { method: 'POST', body: formData });
-      if (!uploadRes.ok) throw new Error(`CloudConvert upload failed: ${await uploadRes.text()}`);
-
-      /* 3. Poll job until finished */
-      const jobId = job.data.id;
-      let exportTask: any = null;
-      for (let i = 0; i < 60; i++) {
-        await new Promise(r => setTimeout(r, 2000));
-        const pollRes = await fetch(`${BASE}/jobs/${jobId}`, {
-          headers: { Authorization: `Bearer ${apiKey}` },
-        });
-        if (!pollRes.ok) throw new Error(`CloudConvert poll failed: ${await pollRes.text()}`);
-        const pollData = await pollRes.json() as any;
-        const status   = pollData.data.status;
-        if (status === 'error') throw new Error(`CloudConvert conversion failed: ${JSON.stringify(pollData.data)}`);
-        if (status === 'finished') {
-          exportTask = pollData.data.tasks.find((t: any) => t.name === 'export-file');
-          break;
-        }
-      }
-      if (!exportTask) throw new Error('CloudConvert job timed out.');
-
-      /* 4. Download the PDF */
-      const downloadUrl = exportTask.result?.files?.[0]?.url;
-      if (!downloadUrl) throw new Error('CloudConvert did not return a download URL.');
-      const dlRes = await fetch(downloadUrl);
-      if (!dlRes.ok) throw new Error(`CloudConvert download failed: ${await dlRes.text()}`);
-      return { buffer: Buffer.from(await dlRes.arrayBuffer()), mime: 'application/pdf', ext: 'pdf' };
+      const pdfBuf = await this.cloudConvertFile(buffer, normalExt, 'pdf');
+      return { buffer: pdfBuf, mime: 'application/pdf', ext: 'pdf' };
     }
 
     if (normalExt !== 'dxf') {
@@ -3502,5 +3446,90 @@ export class PdfService {
 
     const pdfBytes = await outDoc.save();
     return { buffer: this.toBuffer(pdfBytes), mime: 'application/pdf', ext: 'pdf' };
+  }
+
+  /* ═══════════════════════════════════════════════════════════════════════
+     CAD PREVIEW / CLOUDCONVERT HELPER
+  ═══════════════════════════════════════════════════════════════════════ */
+
+  /**
+   * Generic CloudConvert job: upload buffer, convert to outputFormat, download result.
+   */
+  private async cloudConvertFile(buffer: Buffer, inputExt: string, outputFormat: string): Promise<Buffer> {
+    const apiKey = process.env.CLOUDCONVERT_API_KEY;
+    if (!apiKey) throw new Error('CLOUDCONVERT_API_KEY is not set in environment.');
+
+    const BASE = 'https://api.cloudconvert.com/v2';
+
+    /* 1. Create job */
+    const jobRes = await fetch(`${BASE}/jobs`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        tasks: {
+          'upload-file':  { operation: 'import/upload' },
+          'convert-file': { operation: 'convert', input: 'upload-file', output_format: outputFormat },
+          'export-file':  { operation: 'export/url', input: 'convert-file' },
+        },
+      }),
+    });
+    if (!jobRes.ok) throw new Error(`CloudConvert create job failed: ${await jobRes.text()}`);
+    const job = await jobRes.json() as any;
+
+    const uploadTask = job.data.tasks.find((t: any) => t.name === 'upload-file');
+    if (!uploadTask?.result?.form?.url) throw new Error('CloudConvert did not return an upload URL.');
+
+    /* 2. Upload */
+    const { url: uploadUrl, parameters: formParams } = uploadTask.result.form;
+    const fd = new FormData();
+    for (const [k, v] of Object.entries(formParams as Record<string, string>)) fd.append(k, v);
+    const ab = new ArrayBuffer(buffer.byteLength);
+    new Uint8Array(ab).set(buffer);
+    fd.append('file', new Blob([ab], { type: 'application/octet-stream' }), `input.${inputExt}`);
+    const uploadRes = await fetch(uploadUrl, { method: 'POST', body: fd });
+    if (!uploadRes.ok) throw new Error(`CloudConvert upload failed: ${await uploadRes.text()}`);
+
+    /* 3. Poll */
+    const jobId = job.data.id;
+    let exportTask: any = null;
+    for (let i = 0; i < 60; i++) {
+      await new Promise(r => setTimeout(r, 2000));
+      const pollRes = await fetch(`${BASE}/jobs/${jobId}`, {
+        headers: { Authorization: `Bearer ${apiKey}` },
+      });
+      if (!pollRes.ok) throw new Error(`CloudConvert poll failed: ${await pollRes.text()}`);
+      const pollData = await pollRes.json() as any;
+      const status   = pollData.data.status;
+      if (status === 'error') throw new Error(`CloudConvert conversion failed: ${JSON.stringify(pollData.data)}`);
+      if (status === 'finished') {
+        exportTask = pollData.data.tasks.find((t: any) => t.name === 'export-file');
+        break;
+      }
+    }
+    if (!exportTask) throw new Error('CloudConvert job timed out.');
+
+    /* 4. Download */
+    const downloadUrl = exportTask.result?.files?.[0]?.url;
+    if (!downloadUrl) throw new Error('CloudConvert did not return a download URL.');
+    const dlRes = await fetch(downloadUrl);
+    if (!dlRes.ok) throw new Error(`CloudConvert download failed: ${await dlRes.text()}`);
+    return Buffer.from(await dlRes.arrayBuffer());
+  }
+
+  /**
+   * Return a preview image for a CAD file.
+   * DXF     → echo raw buffer back (rendered client-side with dxf-parser).
+   * DWG/DWF → CloudConvert converts to PNG; returns PNG buffer.
+   */
+  async cadPreview(buffer: Buffer, ext: string): Promise<PdfResult> {
+    const normalExt = ext.toLowerCase();
+    if (normalExt === 'dxf') {
+      return { buffer, mime: 'image/x-dxf', ext: 'dxf' };
+    }
+    if (normalExt === 'dwg' || normalExt === 'dwf') {
+      const pngBuf = await this.cloudConvertFile(buffer, normalExt, 'png');
+      return { buffer: pngBuf, mime: 'image/png', ext: 'png' };
+    }
+    throw new BadRequestException(`Unsupported CAD format ".${normalExt}". Supported: dxf, dwg, dwf.`);
   }
 }
