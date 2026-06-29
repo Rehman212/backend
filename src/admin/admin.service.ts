@@ -1,7 +1,8 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, ConflictException, BadRequestException, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { ConfigService } from '@nestjs/config';
+import * as bcrypt from 'bcrypt';
 import {
   S3Client,
   ListObjectsV2Command,
@@ -181,6 +182,43 @@ export class AdminService {
       take: limit,
     });
     return { users, total, page, limit };
+  }
+
+  async createUser(email: string, username: string, plainPassword: string) {
+    const existing = await this.userRepo.findOne({
+      where: [{ email: email.trim() }, { username: username.trim() }],
+    });
+    if (existing) {
+      if (existing.email === email.trim()) {
+        throw new ConflictException('Email already in use');
+      }
+      throw new ConflictException('Username already in use');
+    }
+    const password = await bcrypt.hash(plainPassword, 10);
+    const user = this.userRepo.create({
+      email: email.trim(),
+      username: username.trim(),
+      password,
+      role: 'admin',
+    });
+    const saved = await this.userRepo.save(user);
+    return {
+      id: saved.id,
+      email: saved.email,
+      username: saved.username,
+      role: saved.role,
+      createdAt: saved.createdAt,
+    };
+  }
+
+  async deleteUser(id: number, requesterId: number) {
+    if (id === requesterId) {
+      throw new BadRequestException('You cannot delete your own account');
+    }
+    const user = await this.userRepo.findOne({ where: { id } });
+    if (!user) throw new NotFoundException('User not found');
+    await this.userRepo.remove(user);
+    return { success: true, message: 'User removed' };
   }
 
   /* ── Promote user to admin ── */
