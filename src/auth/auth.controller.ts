@@ -1,9 +1,17 @@
-import { Controller, Post, Get, Body, UseGuards, Request, Res } from '@nestjs/common';
-import { AuthGuard } from '@nestjs/passport';
+import {
+  Controller,
+  Post,
+  Get,
+  Body,
+  UseGuards,
+  Request,
+  Res,
+} from '@nestjs/common';
 import type { Response } from 'express';
 import { ConfigService } from '@nestjs/config';
 import { AuthService } from './auth.service';
 import { JwtAuthGuard } from './jwt-auth.guard';
+import { GoogleOAuthGuard } from './google-oauth.guard';
 
 class SignupDto {
   email!: string;
@@ -12,7 +20,7 @@ class SignupDto {
 }
 
 class LoginDto {
-  email!: string;   // accepts email OR username
+  email!: string; // accepts email OR username
   password!: string;
 }
 
@@ -41,22 +49,36 @@ export class AuthController {
 
   /** One-time bootstrap: create/promote admin using DESTROY_SECRET */
   @Post('bootstrap-admin')
-  bootstrapAdmin(@Body() body: { email: string; username: string; password: string; secret: string }) {
-    return this.authService.bootstrapAdmin(body.email, body.username, body.password, body.secret);
+  bootstrapAdmin(
+    @Body()
+    body: {
+      email: string;
+      username: string;
+      password: string;
+      secret: string;
+    },
+  ) {
+    return this.authService.bootstrapAdmin(
+      body.email,
+      body.username,
+      body.password,
+      body.secret,
+    );
   }
 
   /* ── Google OAuth ──────────────────────────────────────────────────────── */
   @Get('google')
-  @UseGuards(AuthGuard('google'))
+  @UseGuards(GoogleOAuthGuard)
   googleAuth() {
     // Passport redirects to Google — nothing to do here
   }
 
   @Get('google/callback')
-  @UseGuards(AuthGuard('google'))
+  @UseGuards(GoogleOAuthGuard)
   googleCallback(@Request() req: any, @Res() res: Response) {
     const { access_token, user } = this.authService.loginWithGoogle(req.user);
-    const frontendUrl = this.config.get<string>('FRONTEND_URL') ?? 'https://www.godoclab.com';
+    const frontendUrl =
+      this.config.get<string>('FRONTEND_URL') ?? 'https://www.godoclab.com';
     const params = new URLSearchParams({
       token: access_token,
       user: JSON.stringify(user),
