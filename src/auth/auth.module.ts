@@ -7,6 +7,7 @@ import { JwtStrategy } from './jwt.strategy';
 import { GoogleStrategy } from './google.strategy';
 import { AuthController } from './auth.controller';
 import { UsersModule } from '../users/users.module';
+import { getRequiredConfig } from '../config/required-config';
 
 @Module({
   imports: [
@@ -17,8 +18,8 @@ import { UsersModule } from '../users/users.module';
       imports: [ConfigModule],
       inject: [ConfigService],
       useFactory: (config: ConfigService) => ({
-        secret: config.get<string>('ACCESS_TOKEN_SECRET'),
-        signOptions: { expiresIn: config.get('JWT_EXPIRATION') as any },
+        secret: getRequiredConfig(config, 'ACCESS_TOKEN_SECRET'),
+        signOptions: { expiresIn: (config.get<string>('JWT_EXPIRATION') ?? '15m') as any },
       }),
     }),
   ],

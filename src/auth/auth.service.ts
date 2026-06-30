@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcrypt';
 import { UsersService } from '../users/users.service';
+import { getRequiredConfig } from '../config/required-config';
 
 @Injectable()
 export class AuthService {
@@ -56,8 +57,8 @@ export class AuthService {
     return {
       access_token: this.jwtService.sign(payload),
       refresh_token: this.jwtService.sign(payload, {
-        secret: this.config.get<string>('REFRESH_TOKEN_SECRET'),
-        expiresIn: this.config.get('JWT_REFRESH_EXPIRATION') as any,
+        secret: getRequiredConfig(this.config, 'REFRESH_TOKEN_SECRET'),
+        expiresIn: (this.config.get<string>('JWT_REFRESH_EXPIRATION') ?? '7d') as any,
       }),
     };
   }

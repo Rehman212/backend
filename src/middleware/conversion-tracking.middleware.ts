@@ -4,6 +4,7 @@ import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { ConversionsService } from '../conversions/conversions.service';
 import { S3Service } from '../s3/s3.service';
+import { getRequiredConfig } from '../config/required-config';
 
 @Injectable()
 export class ConversionTrackingMiddleware implements NestMiddleware {
@@ -46,7 +47,7 @@ export class ConversionTrackingMiddleware implements NestMiddleware {
     try {
       const token = (req.headers['authorization'] as string).replace('Bearer ', '');
       const payload = this.jwtService.verify(token, {
-        secret: this.config.get<string>('ACCESS_TOKEN_SECRET'),
+        secret: getRequiredConfig(this.config, 'ACCESS_TOKEN_SECRET'),
       });
       const userId: number = Number(payload.sub);
 

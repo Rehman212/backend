@@ -8,10 +8,18 @@ import { AppModule } from './app.module';
  */
 process.on('unhandledRejection', (reason: unknown) => {
   const msg = (reason instanceof Error ? reason.message : String(reason)) ?? '';
+  const code =
+    reason && typeof reason === 'object' && 'code' in reason
+      ? String((reason as { code?: unknown }).code)
+      : '';
   const isDbError =
+    code === '28P01' ||
+    code === '3D000' ||
     msg.includes('ETIMEDOUT') ||
     msg.includes('ECONNREFUSED') ||
+    msg.includes('ENOTFOUND') ||
     msg.includes('Connection terminated') ||
+    msg.includes('password authentication failed') ||
     msg.includes('connect ETIMEOUT') ||
     msg.includes('connect timeout');
 
