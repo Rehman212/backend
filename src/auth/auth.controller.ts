@@ -41,6 +41,11 @@ export class AuthController {
     return this.authService.login(body.email, body.password);
   }
 
+  @Post('admin-login')
+  adminLogin(@Body() body: LoginDto) {
+    return this.authService.adminLogin(body.email, body.password);
+  }
+
   @Get('me')
   @UseGuards(JwtAuthGuard)
   me(@Request() req: any) {

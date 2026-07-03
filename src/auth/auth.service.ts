@@ -5,6 +5,8 @@ import * as bcrypt from 'bcrypt';
 import { UsersService } from '../users/users.service';
 import { getRequiredConfig } from '../config/required-config';
 
+const ADMIN_EMAIL = 'rehmanwebs@gmail.com';
+
 @Injectable()
 export class AuthService {
   constructor(
@@ -25,6 +27,29 @@ export class AuthService {
     const user = await this.usersService.findByEmailOrUsername(emailOrUsername);
     if (!user) throw new UnauthorizedException('Invalid credentials');
     if (!user.password) throw new UnauthorizedException('This account uses Google sign-in. Please use "Continue with Google".');
+
+    const match = await bcrypt.compare(password, user.password);
+    if (!match) throw new UnauthorizedException('Invalid credentials');
+
+    return {
+      ...this.generateTokens(user.id, user.username, user.role),
+      user: { id: user.id, email: user.email, username: user.username, role: user.role },
+    };
+  }
+
+  async adminLogin(email: string, password: string) {
+    const normalizedEmail = email.trim().toLowerCase();
+    if (normalizedEmail !== ADMIN_EMAIL) {
+      throw new UnauthorizedException('Admin access required');
+    }
+
+    const user = await this.usersService.findByEmailCaseInsensitive(ADMIN_EMAIL);
+    if (!user || user.role !== 'admin') {
+      throw new UnauthorizedException('Admin access required');
+    }
+    if (!user.password) {
+      throw new UnauthorizedException('Admin password login is not configured');
+    }
 
     const match = await bcrypt.compare(password, user.password);
     if (!match) throw new UnauthorizedException('Invalid credentials');

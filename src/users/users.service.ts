@@ -21,6 +21,13 @@ export class UsersService {
     });
   }
 
+  findByEmailCaseInsensitive(email: string): Promise<User | null> {
+    return this.repo
+      .createQueryBuilder('user')
+      .where('LOWER(user.email) = LOWER(:email)', { email })
+      .getOne();
+  }
+
   async create(email: string, username: string, plainPassword: string): Promise<User> {
     const existing = await this.repo.findOne({
       where: [{ email }, { username }],

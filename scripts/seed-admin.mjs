@@ -6,14 +6,21 @@ const { Client } = pg;
 const email = process.env.ADMIN_EMAIL;
 const username = process.env.ADMIN_USERNAME;
 const plainPassword = process.env.ADMIN_PASSWORD;
-const connectionString = process.env.DATABASE_URL;
+const connectionString = process.env.DATABASE_URL || (
+  process.env.DB_HOST
+    ? `postgres://${process.env.DB_USERNAME ?? 'postgres'}:${process.env.DB_PASSWORD ?? ''}@${process.env.DB_HOST}:${process.env.DB_PORT ?? 5432}/${process.env.DB_NAME ?? 'postgres'}`
+    : undefined
+);
 
 if (!email || !username || !plainPassword || !connectionString) {
   console.error('Usage: set ADMIN_EMAIL, ADMIN_USERNAME, ADMIN_PASSWORD, DATABASE_URL');
   process.exit(1);
 }
 
-const client = new Client({ connectionString });
+const client = new Client({
+  connectionString,
+  ssl: process.env.DB_SSL === 'false' ? false : { rejectUnauthorized: false },
+});
 await client.connect();
 
 const hash = await bcrypt.hash(plainPassword, 10);
