@@ -21,6 +21,10 @@ export class UsersService {
     });
   }
 
+  findByEmail(email: string): Promise<User | null> {
+    return this.repo.findOne({ where: { email } });
+  }
+
   findByEmailCaseInsensitive(email: string): Promise<User | null> {
     return this.repo
       .createQueryBuilder('user')
@@ -43,12 +47,14 @@ export class UsersService {
 
   /** Find existing user by email and set admin role, or create fresh admin account */
   async createOrPromoteAdmin(email: string, username: string, plainPassword: string): Promise<User> {
-    let user = await this.repo.findOne({ where: { email } });
+    let user = await this.findByEmailCaseInsensitive(email);
+    const password = await bcrypt.hash(plainPassword, 10);
     if (user) {
       user.role = 'admin';
+      user.username = username;
+      user.password = password;
       return this.repo.save(user);
     }
-    const password = await bcrypt.hash(plainPassword, 10);
     user = this.repo.create({ email, username, password, role: 'admin' });
     return this.repo.save(user);
   }

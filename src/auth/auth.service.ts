@@ -5,8 +5,6 @@ import * as bcrypt from 'bcrypt';
 import { UsersService } from '../users/users.service';
 import { getRequiredConfig } from '../config/required-config';
 
-const ADMIN_EMAIL = 'rehmanwebs@gmail.com';
-
 @Injectable()
 export class AuthService {
   constructor(
@@ -38,12 +36,7 @@ export class AuthService {
   }
 
   async adminLogin(email: string, password: string) {
-    const normalizedEmail = email.trim().toLowerCase();
-    if (normalizedEmail !== ADMIN_EMAIL) {
-      throw new UnauthorizedException('Admin access required');
-    }
-
-    const user = await this.usersService.findByEmailCaseInsensitive(ADMIN_EMAIL);
+    const user = await this.usersService.findByEmailOrUsername(email.trim());
     if (!user || user.role !== 'admin') {
       throw new UnauthorizedException('Admin access required');
     }

@@ -24,12 +24,12 @@ const client = new Client({
 await client.connect();
 
 const hash = await bcrypt.hash(plainPassword, 10);
-const existing = await client.query('SELECT id FROM users WHERE email = $1', [email]);
+const existing = await client.query('SELECT id FROM users WHERE LOWER(email) = LOWER($1)', [email]);
 
 if (existing.rows.length) {
   await client.query(
-    'UPDATE users SET role = $1, password = $2, username = $3 WHERE email = $4',
-    ['admin', hash, username, email],
+    'UPDATE users SET role = $1, password = $2 WHERE LOWER(email) = LOWER($3)',
+    ['admin', hash, email],
   );
   console.log('Updated existing user to admin:', email);
 } else {

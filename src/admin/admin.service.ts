@@ -174,17 +174,28 @@ export class AdminService {
   }
 
   /* ── All users ── */
-  async getUsers(page = 1, limit = 20) {
-    const [users, total] = await this.userRepo.findAndCount({
-      select: ['id', 'email', 'username', 'role', 'createdAt'],
-      order: { createdAt: 'DESC' },
-      skip: (page - 1) * limit,
-      take: limit,
-    });
+  async getUsers(page = 1, limit = 20, role?: string) {
+    const qb = this.userRepo
+      .createQueryBuilder('u')
+      .select(['u.id', 'u.email', 'u.username', 'u.role', 'u.createdAt'])
+      .orderBy('u.createdAt', 'DESC')
+      .skip((page - 1) * limit)
+      .take(limit);
+
+    if (role === 'admin' || role === 'user') {
+      qb.where('u.role = :role', { role });
+    }
+
+    const [users, total] = await qb.getManyAndCount();
     return { users, total, page, limit };
   }
 
-  async createUser(email: string, username: string, plainPassword: string) {
+  async createUser(
+    email: string,
+    username: string,
+    plainPassword: string,
+    role: 'user' | 'admin' = 'user',
+  ) {
     const existing = await this.userRepo.findOne({
       where: [{ email: email.trim() }, { username: username.trim() }],
     });
@@ -199,7 +210,7 @@ export class AdminService {
       email: email.trim(),
       username: username.trim(),
       password,
-      role: 'admin',
+      role,
     });
     const saved = await this.userRepo.save(user);
     return {
@@ -221,12 +232,46 @@ export class AdminService {
     return { success: true, message: 'User removed' };
   }
 
+  async updateUserRole(id: number, role: 'user' | 'admin', requesterId: number) {
+    if (role !== 'user' && role !== 'admin') {
+      throw new BadRequestException('Invalid role');
+    }
+
+    const user = await this.userRepo.findOne({ where: { id } });
+    if (!user) throw new NotFoundException('User not found');
+
+    if (user.role === 'admin' && role === 'user') {
+      if (id === requesterId) {
+        throw new BadRequestException('You cannot remove your own admin access');
+      }
+      const adminCount = await this.userRepo.count({ where: { role: 'admin' } });
+      if (adminCount <= 1) {
+        throw new BadRequestException('Cannot remove the last admin');
+      }
+    }
+
+    user.role = role;
+    const saved = await this.userRepo.save(user);
+    return {
+      success: true,
+      message: role === 'admin' ? `${saved.email} is now an admin` : `${saved.email} is now a regular user`,
+      user: {
+        id: saved.id,
+        email: saved.email,
+        username: saved.username,
+        role: saved.role,
+        createdAt: saved.createdAt,
+      },
+    };
+  }
+
   /* ── Promote user to admin ── */
-  async promoteToAdmin(email: string) {
-    const user = await this.userRepo.findOne({ where: { email } });
-    if (!user) return { success: false, message: 'User not found' };
-    user.role = 'admin';
-    await this.userRepo.save(user);
-    return { success: true, message: `${email} is now an admin` };
+  async promoteToAdmin(email: string, requesterId: number) {
+    const user = await this.userRepo
+      .createQueryBuilder('u')
+      .where('LOWER(u.email) = LOWER(:email)', { email: email.trim() })
+      .getOne();
+    if (!user) throw new NotFoundException('User not found');
+    return this.updateUserRole(user.id, 'admin', requesterId);
   }
 }

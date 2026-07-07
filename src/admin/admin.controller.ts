@@ -49,15 +49,30 @@ export class AdminController {
   getUsers(
     @Query('page') page = '1',
     @Query('limit') limit = '20',
+    @Query('role') role?: string,
   ) {
-    return this.adminService.getUsers(Number(page), Number(limit));
+    return this.adminService.getUsers(Number(page), Number(limit), role);
   }
 
   @Post('users')
   createUser(
-    @Body() body: { email: string; username: string; password: string },
+    @Body() body: { email: string; username: string; password: string; role?: 'user' | 'admin' },
   ) {
-    return this.adminService.createUser(body.email, body.username, body.password);
+    return this.adminService.createUser(
+      body.email,
+      body.username,
+      body.password,
+      body.role ?? 'user',
+    );
+  }
+
+  @Patch('users/:id/role')
+  updateUserRole(
+    @Param('id', ParseIntPipe) id: number,
+    @Body('role') role: 'user' | 'admin',
+    @Request() req: { user: { userId: number } },
+  ) {
+    return this.adminService.updateUserRole(id, role, req.user.userId);
   }
 
   @Delete('users/:id')
@@ -119,9 +134,12 @@ export class AdminController {
     return this.postsService.remove(id);
   }
 
-  /** Promote a user to admin role (use ADMIN_SECRET header for extra security) */
+  /** Promote a user to admin role by email */
   @Post('promote')
-  promote(@Body('email') email: string) {
-    return this.adminService.promoteToAdmin(email);
+  promote(
+    @Body('email') email: string,
+    @Request() req: { user: { userId: number } },
+  ) {
+    return this.adminService.promoteToAdmin(email, req.user.userId);
   }
 }
