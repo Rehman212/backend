@@ -1,6 +1,17 @@
-FROM node:22-alpine
+FROM node:22
 
 WORKDIR /app
+
+RUN apt-get update && apt-get install -y \
+    python3 \
+    make \
+    g++ \
+    libcairo2-dev \
+    libpango1.0-dev \
+    libjpeg-dev \
+    libgif-dev \
+    librsvg2-dev \
+    tesseract-ocr
 
 COPY package*.json ./
 
@@ -10,6 +21,6 @@ COPY . .
 
 RUN npm run build
 
-EXPOSE 4000
+EXPOSE 3000
 
 CMD ["npm","run","start:prod"]
