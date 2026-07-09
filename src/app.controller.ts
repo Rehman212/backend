@@ -9,6 +9,11 @@ type HealthResponse = {
 
 @Controller()
 export class AppController {
+  @Get()
+  getRoot(): string {
+    return 'Server is running';
+  }
+
   @Get('health')
   getHealth(): HealthResponse {
     return {

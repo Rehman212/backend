@@ -21,4 +21,10 @@ describe('AppController', () => {
       });
     });
   });
+
+  describe('root', () => {
+    it('should return server running message', () => {
+      expect(appController.getRoot()).toBe('Server is running');
+    });
+  });
 });
