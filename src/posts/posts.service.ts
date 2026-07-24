@@ -17,6 +17,7 @@ export type PostDto = {
   seoTitle?: string;
   seoDescription?: string;
   seoKeywords?: string;
+  featuredImage?: string;
 };
 
 function slugify(text: string) {
@@ -26,6 +27,24 @@ function slugify(text: string) {
     .replace(/[^\w\s-]/g, '')
     .replace(/[\s_-]+/g, '-')
     .replace(/^-+|-+$/g, '');
+}
+
+const MAX_POST_WORDS = 5000;
+
+function countWords(html: string) {
+  const text = (html ?? '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+  if (!text) return 0;
+  return text.split(/\s+/).filter(Boolean).length;
+}
+
+function assertContentWordLimit(content?: string) {
+  if (content === undefined) return;
+  const words = countWords(content);
+  if (words > MAX_POST_WORDS) {
+    throw new BadRequestException(
+      `Blog post content cannot exceed ${MAX_POST_WORDS} words (currently ${words}).`,
+    );
+  }
 }
 
 function serialize(post: BlogPost) {
@@ -40,6 +59,7 @@ function serialize(post: BlogPost) {
     seoTitle: post.seoTitle ?? '',
     seoDescription: post.seoDescription ?? '',
     seoKeywords: post.seoKeywords ?? '',
+    featuredImage: post.featuredImage ?? '',
     createdAt: post.createdAt.toISOString(),
     updatedAt: post.updatedAt.toISOString(),
   };
@@ -70,6 +90,8 @@ export class PostsService {
     const slug = dto.slug?.trim() || slugify(title);
     if (!slug) throw new BadRequestException('Slug is required');
 
+    assertContentWordLimit(dto.content);
+
     const existing = await this.postRepo.findOne({ where: { slug } });
     if (existing) throw new ConflictException('A post with this slug already exists');
 
@@ -83,6 +105,7 @@ export class PostsService {
       seoTitle: dto.seoTitle?.trim() ?? '',
       seoDescription: dto.seoDescription?.trim() ?? '',
       seoKeywords: dto.seoKeywords?.trim() ?? '',
+      featuredImage: dto.featuredImage?.trim() ?? '',
     });
 
     const saved = await this.postRepo.save(post);
@@ -110,11 +133,15 @@ export class PostsService {
     }
 
     if (dto.excerpt !== undefined) post.excerpt = dto.excerpt;
-    if (dto.content !== undefined) post.content = dto.content;
+    if (dto.content !== undefined) {
+      assertContentWordLimit(dto.content);
+      post.content = dto.content;
+    }
     if (dto.status !== undefined) post.status = dto.status;
     if (dto.seoTitle !== undefined) post.seoTitle = dto.seoTitle.trim();
     if (dto.seoDescription !== undefined) post.seoDescription = dto.seoDescription;
     if (dto.seoKeywords !== undefined) post.seoKeywords = dto.seoKeywords.trim();
+    if (dto.featuredImage !== undefined) post.featuredImage = dto.featuredImage.trim();
 
     const saved = await this.postRepo.save(post);
     return serialize(saved);
@@ -130,7 +157,7 @@ export class PostsService {
   async findPublished() {
     const posts = await this.postRepo.find({
       where: { status: 'published' },
-      order: { updatedAt: 'DESC' },
+      order: { createdAt: 'DESC' },
     });
     return posts.map(serialize);
   }

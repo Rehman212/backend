@@ -38,6 +38,10 @@ export class BlogPost {
   @Column({ default: '' })
   seoKeywords: string;
 
+  /** Public URL of featured WebP image (max 100KB) */
+  @Column({ default: '' })
+  featuredImage: string;
+
   @CreateDateColumn()
   createdAt: Date;
 
