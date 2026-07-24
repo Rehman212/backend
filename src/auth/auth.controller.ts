@@ -2,6 +2,7 @@ import {
   Controller,
   Post,
   Get,
+  Patch,
   Body,
   UseGuards,
   Request,
@@ -22,6 +23,13 @@ class SignupDto {
 class LoginDto {
   email!: string; // accepts email OR username
   password!: string;
+}
+
+class UpdateProfileDto {
+  username?: string;
+  email?: string;
+  currentPassword?: string;
+  newPassword?: string;
 }
 
 @Controller('auth')
@@ -48,8 +56,17 @@ export class AuthController {
 
   @Get('me')
   @UseGuards(JwtAuthGuard)
-  me(@Request() req: any) {
-    return req.user;
+  me(@Request() req: { user: { userId: number } }) {
+    return this.authService.getProfile(req.user.userId);
+  }
+
+  @Patch('profile')
+  @UseGuards(JwtAuthGuard)
+  updateProfile(
+    @Request() req: { user: { userId: number } },
+    @Body() body: UpdateProfileDto,
+  ) {
+    return this.authService.updateProfile(req.user.userId, body);
   }
 
   /** One-time bootstrap: create/promote admin using DESTROY_SECRET */

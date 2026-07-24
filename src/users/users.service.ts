@@ -1,8 +1,15 @@
-import { Injectable, ConflictException } from '@nestjs/common';
+import { Injectable, ConflictException, NotFoundException, BadRequestException, UnauthorizedException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Repository, Not } from 'typeorm';
 import { User } from './user.entity';
 import * as bcrypt from 'bcrypt';
+
+export type UpdateProfileDto = {
+  username?: string;
+  email?: string;
+  currentPassword?: string;
+  newPassword?: string;
+};
 
 @Injectable()
 export class UsersService {
@@ -82,5 +89,53 @@ export class UsersService {
 
     const newUser = this.repo.create({ email, username, googleId });
     return this.repo.save(newUser);
+  }
+
+  async updateProfile(userId: number, dto: UpdateProfileDto): Promise<User> {
+    const user = await this.findById(userId);
+    if (!user) throw new NotFoundException('User not found');
+
+    if (dto.username !== undefined) {
+      const username = dto.username.trim();
+      if (!username) throw new BadRequestException('Name is required');
+      if (username !== user.username) {
+        const taken = await this.repo.findOne({
+          where: { username, id: Not(userId) },
+        });
+        if (taken) throw new ConflictException('Username already in use');
+        user.username = username;
+      }
+    }
+
+    if (dto.email !== undefined) {
+      const email = dto.email.trim().toLowerCase();
+      if (!email) throw new BadRequestException('Email is required');
+      if (email !== user.email.toLowerCase()) {
+        const taken = await this.findByEmailCaseInsensitive(email);
+        if (taken && taken.id !== userId) {
+          throw new ConflictException('Email already in use');
+        }
+        user.email = email;
+      }
+    }
+
+    if (dto.newPassword) {
+      if (dto.newPassword.length < 6) {
+        throw new BadRequestException('New password must be at least 6 characters');
+      }
+      if (!user.password) {
+        throw new BadRequestException(
+          'This account uses Google sign-in and has no password to change',
+        );
+      }
+      if (!dto.currentPassword) {
+        throw new BadRequestException('Current password is required to set a new password');
+      }
+      const match = await bcrypt.compare(dto.currentPassword, user.password);
+      if (!match) throw new UnauthorizedException('Current password is incorrect');
+      user.password = await bcrypt.hash(dto.newPassword, 10);
+    }
+
+    return this.repo.save(user);
   }
 }

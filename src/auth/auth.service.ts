@@ -70,6 +70,38 @@ export class AuthService {
     };
   }
 
+  async getProfile(userId: number) {
+    const user = await this.usersService.findById(userId);
+    if (!user) throw new UnauthorizedException('User not found');
+    return {
+      id: user.id,
+      email: user.email,
+      username: user.username,
+      role: user.role,
+    };
+  }
+
+  async updateProfile(
+    userId: number,
+    dto: {
+      username?: string;
+      email?: string;
+      currentPassword?: string;
+      newPassword?: string;
+    },
+  ) {
+    const user = await this.usersService.updateProfile(userId, dto);
+    return {
+      ...this.generateTokens(user.id, user.username, user.role),
+      user: {
+        id: user.id,
+        email: user.email,
+        username: user.username,
+        role: user.role,
+      },
+    };
+  }
+
   private generateTokens(userId: number, username: string, role: string) {
     const payload = { username, sub: userId, role };
     return {
