@@ -17,10 +17,16 @@ jobs:
           username: ${{ secrets.USERNAME }}
           key: ${{ secrets.SSH_KEY }}
           port: ${{ secrets.PORT }}
+          # Docker apt + npm install + image export often exceeds default 10m
+          command_timeout: 30m
           script: |
+            set -e
             cd ~/app/backend
 
             git pull origin main
 
+            # Drop old container, rebuild with smaller context (.dockerignore)
             docker compose down
-            docker compose up -d --build
+            docker compose up -d --build --remove-orphans
+
+            docker image prune -f

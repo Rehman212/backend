@@ -1,0 +1,31 @@
+# Dependencies & build output — biggest cause of huge Docker context
+node_modules
+dist
+coverage
+.nyc_output
+
+# Git / IDE / env
+.git
+.github
+.gitignore
+.vscode
+.idea
+*.md
+.env
+.env.*
+!.env.example
+
+# Logs & temp
+*.log
+npm-debug.log*
+logs
+tmp
+temp
+.tmp
+
+# Tests & misc
+test
+*.spec.ts
+*.e2e-spec.ts
+uploads
+public/uploads
