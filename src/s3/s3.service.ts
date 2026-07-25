@@ -38,6 +38,20 @@ export class S3Service {
     return `https://${this.bucket}.s3.${this.region}.amazonaws.com/${key}`;
   }
 
+  /** Public asset upload (blog images, logos) — same URL shape; bucket should allow public read on these prefixes. */
+  async uploadPublic(buffer: Buffer, key: string, contentType: string): Promise<string> {
+    await this.client.send(
+      new PutObjectCommand({
+        Bucket: this.bucket,
+        Key: key,
+        Body: buffer,
+        ContentType: contentType,
+        CacheControl: 'public, max-age=31536000, immutable',
+      }),
+    );
+    return `https://${this.bucket}.s3.${this.region}.amazonaws.com/${key}`;
+  }
+
   getPresignedUrl(key: string, expiresIn = 3600): Promise<string> {
     return getSignedUrl(
       this.client,

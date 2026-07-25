@@ -138,7 +138,44 @@ export class AdminController {
     }
 
     const key = `blog/featured/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.webp`;
-    const url = await this.s3Service.upload(file.buffer, key, 'image/webp');
+    const url = await this.s3Service.uploadPublic(file.buffer, key, 'image/webp');
+    return { url };
+  }
+
+  /** General site media (header/footer logos) — PNG/WebP/JPG, max 500KB */
+  @Post('media')
+  @UseInterceptors(
+    FileInterceptor('file', {
+      storage: memoryStorage(),
+      limits: { fileSize: 500 * 1024 },
+    }),
+  )
+  async uploadMedia(
+    @UploadedFile() file: MFile,
+    @Body() body: { kind?: string },
+  ) {
+    if (!file?.buffer?.length) {
+      throw new BadRequestException('Image file is required');
+    }
+    if (file.size > 500 * 1024) {
+      throw new BadRequestException('File must be 500KB or smaller');
+    }
+
+    const mime = (file.mimetype || '').toLowerCase();
+    const allowed: Record<string, string> = {
+      'image/webp': 'webp',
+      'image/png': 'png',
+      'image/jpeg': 'jpg',
+      'image/jpg': 'jpg',
+    };
+    const ext = allowed[mime];
+    if (!ext) {
+      throw new BadRequestException('Only PNG, WebP, or JPG images are allowed');
+    }
+
+    const kind = body?.kind === 'footer' ? 'footer' : body?.kind === 'header' ? 'header' : 'media';
+    const key = `site/${kind}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
+    const url = await this.s3Service.uploadPublic(file.buffer, key, mime);
     return { url };
   }
 
