@@ -632,17 +632,40 @@ export class PdfService {
     let rasterPass: Buffer | null = null;
     // CAD / vector drawings barely shrink via image recompress — flatten pages.
     if (imageSaved < 0.2) {
-      try {
-        rasterPass = await this.rasterizePdfForCompress(
-          buffer,
-          settings.rasterQuality,
-          settings.rasterMaxSide,
-          settings.rasterDpi,
-          settings.preferPng,
-        );
-      } catch (err) {
-        console.error('[compress] raster fallback failed:', (err as Error).message);
-        rasterPass = null;
+      const rasterAttempts = [
+        {
+          quality: settings.rasterQuality,
+          maxSide: settings.rasterMaxSide,
+          dpi: settings.rasterDpi,
+          preferPng: settings.preferPng,
+        },
+        {
+          quality: Math.max(settings.rasterQuality - 12, 40),
+          maxSide: Math.min(settings.rasterMaxSide, 1800),
+          dpi: Math.min(settings.rasterDpi, 130),
+          preferPng: settings.preferPng,
+        },
+        {
+          quality: 40,
+          maxSide: 1400,
+          dpi: 110,
+          preferPng: true,
+        },
+      ];
+      for (const attempt of rasterAttempts) {
+        try {
+          rasterPass = await this.rasterizePdfForCompress(
+            buffer,
+            attempt.quality,
+            attempt.maxSide,
+            attempt.dpi,
+            attempt.preferPng,
+          );
+          if (rasterPass.length < buffer.length * 0.95) break;
+        } catch (err) {
+          console.error('[compress] raster fallback failed:', (err as Error).message);
+          rasterPass = null;
+        }
       }
     }
 
