@@ -8,5 +8,8 @@ services:
     ports:
       - "4000:4000"
 
+    environment:
+      NODE_OPTIONS: --max-old-space-size=1536
+
     env_file:
       - .env

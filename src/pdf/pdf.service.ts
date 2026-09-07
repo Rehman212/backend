@@ -631,40 +631,32 @@ export class PdfService {
     const imageSaved = (buffer.length - imagePass.length) / buffer.length;
     let rasterPass: Buffer | null = null;
     // CAD / vector drawings barely shrink via image recompress — flatten pages.
+    // Try the proven small flatten FIRST so live EC2 does not OOM on 2600px pages
+    // and accidentally return the original 9MB file.
     if (imageSaved < 0.2) {
       const rasterAttempts = [
-        {
-          quality: settings.rasterQuality,
-          maxSide: settings.rasterMaxSide,
-          dpi: settings.rasterDpi,
-          preferPng: settings.preferPng,
-        },
-        {
-          quality: Math.max(settings.rasterQuality - 12, 40),
-          maxSide: Math.min(settings.rasterMaxSide, 1800),
-          dpi: Math.min(settings.rasterDpi, 130),
-          preferPng: settings.preferPng,
-        },
-        {
-          quality: 40,
-          maxSide: 1400,
-          dpi: 110,
-          preferPng: true,
-        },
+        { quality: 48, maxSide: 1600, dpi: 120, preferPng: true },
+        { quality: 40, maxSide: 1400, dpi: 110, preferPng: true },
+        { quality: 36, maxSide: 1200, dpi: 100, preferPng: false },
       ];
       for (const attempt of rasterAttempts) {
         try {
-          rasterPass = await this.rasterizePdfForCompress(
+          const next = await this.rasterizePdfForCompress(
             buffer,
             attempt.quality,
             attempt.maxSide,
             attempt.dpi,
             attempt.preferPng,
           );
-          if (rasterPass.length < buffer.length * 0.95) break;
+          console.log(
+            `[compress] raster ${attempt.maxSide}px → ${next.length} bytes (original ${buffer.length})`,
+          );
+          if (next.length < buffer.length * 0.95) {
+            rasterPass = next;
+            break;
+          }
         } catch (err) {
           console.error('[compress] raster fallback failed:', (err as Error).message);
-          rasterPass = null;
         }
       }
     }
