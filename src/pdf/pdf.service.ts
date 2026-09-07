@@ -635,9 +635,9 @@ export class PdfService {
     // and accidentally return the original 9MB file.
     if (imageSaved < 0.2) {
       const rasterAttempts = [
-        { quality: 48, maxSide: 1600, dpi: 120, preferPng: true },
-        { quality: 40, maxSide: 1400, dpi: 110, preferPng: true },
-        { quality: 36, maxSide: 1200, dpi: 100, preferPng: false },
+        { quality: 45, maxSide: 1400, dpi: 110, preferPng: false },
+        { quality: 38, maxSide: 1200, dpi: 100, preferPng: false },
+        { quality: 32, maxSide: 1000, dpi: 90, preferPng: false },
       ];
       for (const attempt of rasterAttempts) {
         try {
@@ -722,26 +722,18 @@ export class PdfService {
       context.fillRect(0, 0, w, h);
       await page.render({ canvasContext: context, viewport, canvasFactory }).promise;
 
-      const png = canvas.toBuffer('image/png');
-      const [jpeg, palette] = await Promise.all([
-        sharp(png)
-          .jpeg({
-            quality: jpegQuality,
-            mozjpeg: true,
-            chromaSubsampling: '4:4:4',
-          })
-          .toBuffer(),
-        sharp(png)
-          .png({ compressionLevel: 9, palette: true, colors: 64, effort: 8 })
-          .toBuffer(),
-      ]);
+      const jpegBuf = canvas.toBuffer('image/jpeg', {
+        quality: Math.min(Math.max(jpegQuality / 100, 0.28), 0.85),
+      });
+      const jpeg = await sharp(jpegBuf)
+        .jpeg({
+          quality: jpegQuality,
+          mozjpeg: true,
+          chromaSubsampling: '4:2:0',
+        })
+        .toBuffer();
 
-      const usePng = preferPng
-        ? palette.length <= jpeg.length * 1.45
-        : palette.length <= jpeg.length;
-      const embedded = usePng
-        ? await outDoc.embedPng(palette)
-        : await outDoc.embedJpg(jpeg);
+      const embedded = await outDoc.embedJpg(jpeg);
       const outPage = outDoc.addPage([base.width, base.height]);
       outPage.drawImage(embedded, {
         x: 0,
