@@ -21,6 +21,7 @@ import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
 import { AdminService } from './admin.service';
 import { PostsService } from '../posts/posts.service';
+import { PagesService, type PageDto } from '../pages/pages.service';
 import { S3Service } from '../s3/s3.service';
 
 interface MFile {
@@ -52,6 +53,7 @@ export class AdminController {
   constructor(
     private readonly adminService: AdminService,
     private readonly postsService: PostsService,
+    private readonly pagesService: PagesService,
     private readonly s3Service: S3Service,
   ) {}
 
@@ -224,6 +226,37 @@ export class AdminController {
   @Delete('posts/:id')
   deletePost(@Param('id', ParseIntPipe) id: number) {
     return this.postsService.remove(id);
+  }
+
+  /** CMS pages */
+  @Get('pages')
+  getPages() {
+    return this.pagesService.findAll();
+  }
+
+  @Post('pages/import')
+  importPages(@Body() body: { pages?: PageDto[] }) {
+    return this.pagesService.importMany(body.pages ?? []);
+  }
+
+  @Post('pages')
+  createPage(@Body() body: PageDto & { title: string }) {
+    return this.pagesService.create(body);
+  }
+
+  @Get('pages/:id')
+  getPage(@Param('id', ParseIntPipe) id: number) {
+    return this.pagesService.findOne(id);
+  }
+
+  @Patch('pages/:id')
+  updatePage(@Param('id', ParseIntPipe) id: number, @Body() body: PageDto) {
+    return this.pagesService.update(id, body);
+  }
+
+  @Delete('pages/:id')
+  deletePage(@Param('id', ParseIntPipe) id: number) {
+    return this.pagesService.remove(id);
   }
 
   /** Promote a user to admin role by email */

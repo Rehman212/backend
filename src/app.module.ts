@@ -23,6 +23,8 @@ import { ConversionTrackingMiddleware } from './middleware/conversion-tracking.m
 import { User } from './users/user.entity';
 import { ConversionRecord } from './conversions/conversion.entity';
 import { BlogPost } from './posts/blog-post.entity';
+import { CmsPage } from './pages/cms-page.entity';
+import { PagesModule } from './pages/pages.module';
 import { getRequiredConfig } from './config/required-config';
 
 const localEnv = readLocalEnv();
@@ -101,7 +103,7 @@ function getEnvValue(key: string): string | undefined {
                         : getRequiredConfig(config, 'DB_PASSWORD'),
                       database: config.get<string>('DB_NAME') ?? 'postgres',
                     }),
-                entities: [User, ConversionRecord, BlogPost],
+                entities: [User, ConversionRecord, BlogPost, CmsPage],
                 synchronize: true,
                 ssl: isDevelopment ? false : { rejectUnauthorized: false },
                 retryAttempts: 3, // fail after 3 retries, not 10
@@ -115,6 +117,7 @@ function getEnvValue(key: string): string | undefined {
           ConversionsModule,
           AdminModule,
           PostsModule,
+          PagesModule,
           ConversionTrackingModule,
         ]
       : []),
