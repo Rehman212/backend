@@ -11,6 +11,12 @@ import {
   StandardFonts,
   Color,
   PDFName,
+  PDFArray,
+  PDFRawStream,
+  PDFStream,
+  PDFNumber,
+  PDFRef,
+  decodePDFRawStream,
   PDFTextField,
   PDFCheckBox,
   PDFDropdown,
@@ -604,9 +610,268 @@ export class PdfService {
   ═══════════════════════════════════════════════════════════════════════ */
 
   async compress(buffer: Buffer, compressionLevel: string): Promise<PdfResult> {
+    const level = (compressionLevel || 'recommended').toLowerCase();
+    const settings =
+      level === 'low'
+        ? { quality: 80, maxDim: 2800, rasterQuality: 82, rasterMaxSide: 3200, rasterDpi: 200, preferPng: true }
+        : level === 'extreme'
+          ? { quality: 40, maxDim: 1400, rasterQuality: 52, rasterMaxSide: 1800, rasterDpi: 130, preferPng: false }
+          : { quality: 62, maxDim: 2000, rasterQuality: 72, rasterMaxSide: 2600, rasterDpi: 170, preferPng: true };
+
     const doc = await PDFDocument.load(buffer, { ignoreEncryption: true });
-    const useStreams = compressionLevel !== 'low';
-    return { buffer: this.toBuffer(await doc.save({ useObjectStreams: useStreams })), mime: 'application/pdf', ext: 'pdf' };
+    await this.recompressPdfImages(doc, settings.quality, settings.maxDim);
+
+    const imagePass = this.toBuffer(
+      await doc.save({
+        useObjectStreams: level !== 'low',
+        addDefaultPage: false,
+      }),
+    );
+
+    const imageSaved = (buffer.length - imagePass.length) / buffer.length;
+    let rasterPass: Buffer | null = null;
+    // CAD / vector drawings barely shrink via image recompress — flatten pages.
+    if (imageSaved < 0.2) {
+      try {
+        rasterPass = await this.rasterizePdfForCompress(
+          buffer,
+          settings.rasterQuality,
+          settings.rasterMaxSide,
+          settings.rasterDpi,
+          settings.preferPng,
+        );
+      } catch (err) {
+        console.error('[compress] raster fallback failed:', (err as Error).message);
+        rasterPass = null;
+      }
+    }
+
+    const candidates = [buffer, imagePass, rasterPass].filter((b): b is Buffer => !!b);
+    const out = candidates.reduce((smallest, next) =>
+      next.length < smallest.length ? next : smallest,
+    );
+    return { buffer: out, mime: 'application/pdf', ext: 'pdf' };
+  }
+
+  /** Flatten vector-heavy PDFs (CAD drawings) into compressed pages. */
+  private async rasterizePdfForCompress(
+    buffer: Buffer,
+    jpegQuality: number,
+    maxSide: number,
+    dpi: number,
+    preferPng: boolean,
+  ): Promise<Buffer> {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const pdfjsLib = require('pdfjs-dist/legacy/build/pdf.js') as any;
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { createCanvas } = require('canvas') as { createCanvas: (w: number, h: number) => any };
+    pdfjsLib.GlobalWorkerOptions.workerSrc = '';
+
+    const srcDoc = await pdfjsLib.getDocument({
+      data: new Uint8Array(buffer),
+      verbosity: 0,
+    }).promise;
+    const outDoc = await PDFDocument.create();
+
+    const canvasFactory = {
+      create: (cw: number, ch: number) => {
+        const c = createCanvas(cw, ch);
+        return { canvas: c, context: c.getContext('2d') };
+      },
+      reset: (pair: { canvas: { width: number; height: number } }, cw: number, ch: number) => {
+        pair.canvas.width = cw;
+        pair.canvas.height = ch;
+      },
+      destroy: (pair: { canvas: { width: number; height: number } }) => {
+        pair.canvas.width = 0;
+        pair.canvas.height = 0;
+      },
+    };
+
+    for (let pageNum = 1; pageNum <= srcDoc.numPages; pageNum++) {
+      const page = await srcDoc.getPage(pageNum);
+      const base = page.getViewport({ scale: 1 });
+      const scale = Math.min(
+        dpi / 72,
+        maxSide / Math.max(base.width, base.height, 1),
+      );
+      const viewport = page.getViewport({ scale });
+      const w = Math.max(1, Math.ceil(viewport.width));
+      const h = Math.max(1, Math.ceil(viewport.height));
+      const canvas = createCanvas(w, h);
+      const context = canvas.getContext('2d');
+      context.patternQuality = 'best';
+      context.quality = 'best';
+      context.antialias = 'subpixel';
+      context.fillStyle = '#ffffff';
+      context.fillRect(0, 0, w, h);
+      await page.render({ canvasContext: context, viewport, canvasFactory }).promise;
+
+      const png = canvas.toBuffer('image/png');
+      const [jpeg, palette] = await Promise.all([
+        sharp(png)
+          .jpeg({
+            quality: jpegQuality,
+            mozjpeg: true,
+            chromaSubsampling: '4:4:4',
+          })
+          .toBuffer(),
+        sharp(png)
+          .png({ compressionLevel: 9, palette: true, colors: 64, effort: 8 })
+          .toBuffer(),
+      ]);
+
+      const usePng = preferPng
+        ? palette.length <= jpeg.length * 1.45
+        : palette.length <= jpeg.length;
+      const embedded = usePng
+        ? await outDoc.embedPng(palette)
+        : await outDoc.embedJpg(jpeg);
+      const outPage = outDoc.addPage([base.width, base.height]);
+      outPage.drawImage(embedded, {
+        x: 0,
+        y: 0,
+        width: base.width,
+        height: base.height,
+      });
+    }
+
+    return this.toBuffer(
+      await outDoc.save({ useObjectStreams: true, addDefaultPage: false }),
+    );
+  }
+
+  private pdfName(obj: unknown): string | null {
+    if (!obj || typeof (obj as PDFName).asString !== 'function') return null;
+    return (obj as PDFName).asString().replace(/^\//, '');
+  }
+
+  private pdfFilters(filter: unknown): string[] {
+    if (!filter) return [];
+    const single = this.pdfName(filter);
+    if (single) return [single];
+    if (filter instanceof PDFArray) {
+      const names: string[] = [];
+      for (let i = 0; i < filter.size(); i++) {
+        const n = this.pdfName(filter.lookup(i));
+        if (n) names.push(n);
+      }
+      return names;
+    }
+    return [];
+  }
+
+  private pdfInt(obj: unknown): number | null {
+    if (obj instanceof PDFNumber) return obj.asNumber();
+    return null;
+  }
+
+  private imageChannels(colorSpace: unknown): number | null {
+    const name = this.pdfName(colorSpace);
+    if (name === 'DeviceGray' || name === 'CalGray') return 1;
+    if (name === 'DeviceRGB' || name === 'CalRGB') return 3;
+    if (name === 'DeviceCMYK') return 4;
+    if (colorSpace instanceof PDFArray && colorSpace.size() > 0) {
+      const first = this.pdfName(colorSpace.lookup(0));
+      if (first === 'ICCBased' || first === 'DeviceN') return null;
+      if (first === 'Indexed' || first === 'Separation') return null;
+      if (first === 'CalRGB' || first === 'Lab') return 3;
+      if (first === 'CalGray') return 1;
+    }
+    return name ? null : 3;
+  }
+
+  private async recompressPdfImages(
+    doc: PDFDocument,
+    quality: number,
+    maxDim: number,
+  ): Promise<void> {
+    const objects = doc.context.enumerateIndirectObjects();
+
+    for (const [ref, obj] of objects) {
+      if (!(obj instanceof PDFRawStream) && !(obj instanceof PDFStream)) continue;
+
+      const dict = obj.dict;
+      if (this.pdfName(dict.lookup(PDFName.of('Subtype'))) !== 'Image') continue;
+      if (this.pdfName(dict.lookup(PDFName.of('Type'))) === 'Metadata') continue;
+      if (dict.lookup(PDFName.of('ImageMask'))) continue;
+
+      const width = this.pdfInt(dict.lookup(PDFName.of('Width')));
+      const height = this.pdfInt(dict.lookup(PDFName.of('Height')));
+      if (!width || !height || width < 48 || height < 48) continue;
+
+      const bits = this.pdfInt(dict.lookup(PDFName.of('BitsPerComponent'))) ?? 8;
+      if (bits !== 8) continue;
+
+      const filters = this.pdfFilters(dict.lookup(PDFName.of('Filter')));
+      if (filters.includes('JBIG2Decode') || filters.includes('CCITTFaxDecode')) continue;
+
+      const originalBytes = Buffer.from(obj.getContents());
+      if (originalBytes.length < 8 * 1024) continue;
+
+      let input: Buffer | { buffer: Buffer; raw: sharp.Raw } | null = null;
+
+      if (filters.includes('DCTDecode') || filters.includes('JPXDecode')) {
+        input = originalBytes;
+      } else {
+        let decoded: Uint8Array;
+        try {
+          decoded = decodePDFRawStream(obj as PDFRawStream).decode();
+        } catch {
+          continue;
+        }
+        const channels = this.imageChannels(dict.lookup(PDFName.of('ColorSpace')));
+        if (decoded.length === width * height) {
+          input = { buffer: Buffer.from(decoded), raw: { width, height, channels: 1 } };
+        } else if (decoded.length === width * height * 3) {
+          input = { buffer: Buffer.from(decoded), raw: { width, height, channels: 3 } };
+        } else if (decoded.length === width * height * 4) {
+          input = { buffer: Buffer.from(decoded), raw: { width, height, channels: 4 } };
+        } else if (!channels) {
+          input = Buffer.from(decoded);
+        } else {
+          continue;
+        }
+      }
+
+      try {
+        const pipeline = Buffer.isBuffer(input)
+          ? sharp(input, { failOn: 'none' })
+          : sharp(input.buffer, { raw: input.raw, failOn: 'none' });
+
+        const meta = await pipeline.metadata();
+        const srcW = meta.width ?? width;
+        const srcH = meta.height ?? height;
+        const scale = Math.min(1, maxDim / Math.max(srcW, srcH));
+        const newW = Math.max(1, Math.round(srcW * scale));
+        const newH = Math.max(1, Math.round(srcH * scale));
+
+        const jpeg = await pipeline
+          .resize(newW, newH, { fit: 'fill' })
+          .removeAlpha()
+          .jpeg({ quality, mozjpeg: true, chromaSubsampling: '4:2:0' })
+          .toBuffer();
+
+        if (jpeg.length >= originalBytes.length && scale >= 0.99) continue;
+
+        const smask = dict.get(PDFName.of('SMask'));
+        doc.context.assign(
+          ref as PDFRef,
+          doc.context.stream(jpeg, {
+            Type: 'XObject',
+            Subtype: 'Image',
+            BitsPerComponent: 8,
+            Width: newW,
+            Height: newH,
+            ColorSpace: PDFName.of('DeviceRGB'),
+            Filter: PDFName.of('DCTDecode'),
+            ...(smask ? { SMask: smask } : {}),
+          }),
+        );
+      } catch {
+        // Keep original image if it cannot be decoded/recompressed
+      }
+    }
   }
 
   async rotate(buffer: Buffer, rotation: number): Promise<PdfResult> {
