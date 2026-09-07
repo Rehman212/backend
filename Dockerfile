@@ -18,6 +18,9 @@ RUN apt-get update && apt-get install -y \
     librsvg2-dev \
     libpixman-1-0 \
     fonts-liberation \
+    ghostscript \
+    poppler-utils \
+    poppler-data \
     tesseract-ocr \
     && rm -rf /var/lib/apt/lists/*
 

@@ -613,10 +613,10 @@ export class PdfService {
     const level = (compressionLevel || 'recommended').toLowerCase();
     const settings =
       level === 'low'
-        ? { quality: 80, maxDim: 2800, rasterQuality: 82, rasterMaxSide: 3200, rasterDpi: 200, preferPng: true }
+        ? { quality: 80, maxDim: 2800 }
         : level === 'extreme'
-          ? { quality: 40, maxDim: 1400, rasterQuality: 52, rasterMaxSide: 1800, rasterDpi: 130, preferPng: false }
-          : { quality: 62, maxDim: 2000, rasterQuality: 72, rasterMaxSide: 2600, rasterDpi: 170, preferPng: true };
+          ? { quality: 40, maxDim: 1400 }
+          : { quality: 62, maxDim: 2000 };
 
     const doc = await PDFDocument.load(buffer, { ignoreEncryption: true });
     await this.recompressPdfImages(doc, settings.quality, settings.maxDim);
@@ -629,34 +629,47 @@ export class PdfService {
     );
 
     const imageSaved = (buffer.length - imagePass.length) / buffer.length;
+    console.log(
+      `[compress] original=${buffer.length} imagePass=${imagePass.length} saved=${(imageSaved * 100).toFixed(1)}%`,
+    );
+
     let rasterPass: Buffer | null = null;
-    // CAD / vector drawings barely shrink via image recompress — flatten pages.
-    // Try the proven small flatten FIRST so live EC2 does not OOM on 2600px pages
-    // and accidentally return the original 9MB file.
+    // Vector CAD drawings barely shrink via image recompress. Do not use
+    // pdfjs+canvas as the live path — it silently fails on EC2 and we
+    // return the ~9MB rewrite. Flatten with pdftoppm/Ghostscript first.
     if (imageSaved < 0.2) {
-      const rasterAttempts = [
-        { quality: 45, maxSide: 1400, dpi: 110, preferPng: false },
-        { quality: 38, maxSide: 1200, dpi: 100, preferPng: false },
-        { quality: 32, maxSide: 1000, dpi: 90, preferPng: false },
-      ];
+      const rasterAttempts =
+        level === 'extreme'
+          ? [
+              { quality: 38, dpi: 90 },
+              { quality: 32, dpi: 72 },
+            ]
+          : [
+              { quality: 42, dpi: 100 },
+              { quality: 35, dpi: 72 },
+            ];
       for (const attempt of rasterAttempts) {
         try {
-          const next = await this.rasterizePdfForCompress(
+          const next = await this.rasterizePdfWithSystemTools(
             buffer,
             attempt.quality,
-            attempt.maxSide,
             attempt.dpi,
-            attempt.preferPng,
           );
           console.log(
-            `[compress] raster ${attempt.maxSide}px → ${next.length} bytes (original ${buffer.length})`,
+            `[compress] system-raster ${attempt.dpi}dpi q${attempt.quality} → ${next.length} bytes (original ${buffer.length})`,
           );
-          if (next.length < buffer.length * 0.95) {
-            rasterPass = next;
-            break;
-          }
+          if (!rasterPass || next.length < rasterPass.length) rasterPass = next;
+          if (next.length < buffer.length * 0.5) break;
         } catch (err) {
-          console.error('[compress] raster fallback failed:', (err as Error).message);
+          console.error('[compress] system-raster failed:', (err as Error).message);
+        }
+      }
+      if (!rasterPass) {
+        try {
+          rasterPass = await this.rasterizePdfForCompress(buffer, 40, 1200, 100, false);
+          console.log(`[compress] canvas-raster → ${rasterPass.length} bytes`);
+        } catch (err) {
+          console.error('[compress] canvas-raster failed:', (err as Error).message);
         }
       }
     }
@@ -665,7 +678,82 @@ export class PdfService {
     const out = candidates.reduce((smallest, next) =>
       next.length < smallest.length ? next : smallest,
     );
+    console.log(`[compress] using ${out.length} bytes`);
     return { buffer: out, mime: 'application/pdf', ext: 'pdf' };
+  }
+
+  /** Flatten via Poppler/Ghostscript (what actually works for CAD on Linux). */
+  private async rasterizePdfWithSystemTools(
+    buffer: Buffer,
+    jpegQuality: number,
+    dpi: number,
+  ): Promise<Buffer> {
+    const execAsync = promisify(exec);
+    const q = Math.min(85, Math.max(28, Math.round(jpegQuality)));
+    const r = Math.min(200, Math.max(50, Math.round(dpi)));
+    const tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'pdfcompress-'));
+    const inFile = path.join(tmpDir, 'input.pdf');
+    await fs.promises.writeFile(inFile, buffer);
+    const execOpts = { timeout: 180_000, maxBuffer: 64 * 1024 * 1024 };
+
+    const pageNum = (name: string) => {
+      const m = name.match(/(\d+)\.[^.]+$/);
+      return m ? parseInt(m[1], 10) : 0;
+    };
+
+    try {
+      let imgFiles: string[] = [];
+      const prefix = path.join(tmpDir, 'page');
+      try {
+        await execAsync(`pdftoppm -jpeg -r ${r} "${inFile}" "${prefix}"`, execOpts);
+        imgFiles = (await fs.promises.readdir(tmpDir))
+          .filter(f => /^page-\d+\.jpg$/i.test(f))
+          .sort((a, b) => pageNum(a) - pageNum(b));
+      } catch (err) {
+        console.error('[compress] pdftoppm failed:', (err as Error).message);
+      }
+
+      if (imgFiles.length === 0) {
+        const gsOut = path.join(tmpDir, 'page_%04d.jpg');
+        await execAsync(
+          `gs -dSAFER -dNOPAUSE -dBATCH -sDEVICE=jpeg -dJPEGQ=${q} -r${r} -sOutputFile="${gsOut}" "${inFile}"`,
+          execOpts,
+        );
+        imgFiles = (await fs.promises.readdir(tmpDir))
+          .filter(f => /^page_\d+\.jpg$/i.test(f))
+          .sort((a, b) => pageNum(a) - pageNum(b));
+      }
+
+      if (imgFiles.length === 0) {
+        throw new Error('pdftoppm/gs produced no JPEG pages');
+      }
+
+      const srcDoc = await PDFDocument.load(buffer, { ignoreEncryption: true });
+      const outDoc = await PDFDocument.create();
+
+      for (let i = 0; i < imgFiles.length; i++) {
+        const raw = await fs.promises.readFile(path.join(tmpDir, imgFiles[i]));
+        const jpeg = await sharp(raw)
+          .jpeg({ quality: q, mozjpeg: true, chromaSubsampling: '4:2:0' })
+          .toBuffer();
+        const pageIndex = Math.min(i, srcDoc.getPageCount() - 1);
+        const size = srcDoc.getPage(pageIndex).getSize();
+        const embedded = await outDoc.embedJpg(jpeg);
+        const outPage = outDoc.addPage([size.width, size.height]);
+        outPage.drawImage(embedded, {
+          x: 0,
+          y: 0,
+          width: size.width,
+          height: size.height,
+        });
+      }
+
+      return this.toBuffer(
+        await outDoc.save({ useObjectStreams: true, addDefaultPage: false }),
+      );
+    } finally {
+      await fs.promises.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    }
   }
 
   /** Flatten vector-heavy PDFs (CAD drawings) into compressed pages. */
