@@ -42,6 +42,10 @@ export class BlogPost {
   @Column({ default: '' })
   featuredImage: string;
 
+  /** Per-post FAQs shown only on this published article */
+  @Column({ type: 'jsonb', default: () => "'[]'" })
+  faqs: { question: string; answer: string }[];
+
   @CreateDateColumn()
   createdAt: Date;
 

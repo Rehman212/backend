@@ -8,6 +8,8 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { BlogPost } from './blog-post.entity';
 
+export type BlogFaq = { question: string; answer: string };
+
 export type PostDto = {
   title?: string;
   slug?: string;
@@ -18,7 +20,24 @@ export type PostDto = {
   seoDescription?: string;
   seoKeywords?: string;
   featuredImage?: string;
+  faqs?: BlogFaq[];
 };
+
+const MAX_FAQS = 30;
+
+function normalizeFaqs(raw: unknown): BlogFaq[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((item) => {
+      const row = item as { question?: unknown; answer?: unknown };
+      return {
+        question: typeof row?.question === 'string' ? row.question.trim() : '',
+        answer: typeof row?.answer === 'string' ? row.answer.trim() : '',
+      };
+    })
+    .filter((faq) => faq.question && faq.answer)
+    .slice(0, MAX_FAQS);
+}
 
 function slugify(text: string) {
   return text
@@ -60,6 +79,7 @@ function serialize(post: BlogPost) {
     seoDescription: post.seoDescription ?? '',
     seoKeywords: post.seoKeywords ?? '',
     featuredImage: post.featuredImage ?? '',
+    faqs: normalizeFaqs(post.faqs),
     createdAt: post.createdAt.toISOString(),
     updatedAt: post.updatedAt.toISOString(),
   };
@@ -106,6 +126,7 @@ export class PostsService {
       seoDescription: dto.seoDescription?.trim() ?? '',
       seoKeywords: dto.seoKeywords?.trim() ?? '',
       featuredImage: dto.featuredImage?.trim() ?? '',
+      faqs: normalizeFaqs(dto.faqs),
     });
 
     const saved = await this.postRepo.save(post);
@@ -142,6 +163,7 @@ export class PostsService {
     if (dto.seoDescription !== undefined) post.seoDescription = dto.seoDescription;
     if (dto.seoKeywords !== undefined) post.seoKeywords = dto.seoKeywords.trim();
     if (dto.featuredImage !== undefined) post.featuredImage = dto.featuredImage.trim();
+    if (dto.faqs !== undefined) post.faqs = normalizeFaqs(dto.faqs);
 
     const saved = await this.postRepo.save(post);
     return serialize(saved);

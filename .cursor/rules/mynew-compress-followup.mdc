@@ -1,0 +1,16 @@
+---
+description: Resume live PDF compress/deploy work when user says *MyNew*
+alwaysApply: true
+---
+
+# *MyNew* follow-up
+
+If the user says **`*MyNew*`** (or `MyNew`), they want to continue the **live Compress PDF** issue — not a new topic.
+
+## What was left unsolved
+- Local compress works (villa architectural PDF ~9MB → ~1.8MB).
+- **godoclab.com** still returned the original ~9MB because production Docker often did not rebuild (GitHub Action green in ~38s vs real rebuild 6–10 min).
+- Fix lives in `src/pdf/pdf.service.ts` (`compress` + `rasterizePdfForCompress`).
+- Deploy: EC2 `~/app/backend` → `git pull origin main` then `docker compose build --no-cache && docker compose up -d`.
+
+Do not treat `*MyNew*` as a new feature request. Resume this deploy/live-compress work.

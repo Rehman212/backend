@@ -25,6 +25,8 @@ import { ConversionRecord } from './conversions/conversion.entity';
 import { BlogPost } from './posts/blog-post.entity';
 import { CmsPage } from './pages/cms-page.entity';
 import { PagesModule } from './pages/pages.module';
+import { SiteSettings } from './site-settings/site-settings.entity';
+import { SiteSettingsModule } from './site-settings/site-settings.module';
 import { getRequiredConfig } from './config/required-config';
 
 const localEnv = readLocalEnv();
@@ -103,7 +105,7 @@ function getEnvValue(key: string): string | undefined {
                         : getRequiredConfig(config, 'DB_PASSWORD'),
                       database: config.get<string>('DB_NAME') ?? 'postgres',
                     }),
-                entities: [User, ConversionRecord, BlogPost, CmsPage],
+                entities: [User, ConversionRecord, BlogPost, CmsPage, SiteSettings],
                 synchronize: true,
                 ssl: isDevelopment ? false : { rejectUnauthorized: false },
                 retryAttempts: 3, // fail after 3 retries, not 10
@@ -118,6 +120,7 @@ function getEnvValue(key: string): string | undefined {
           AdminModule,
           PostsModule,
           PagesModule,
+          SiteSettingsModule,
           ConversionTrackingModule,
         ]
       : []),

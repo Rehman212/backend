@@ -23,6 +23,7 @@ import { AdminService } from './admin.service';
 import { PostsService } from '../posts/posts.service';
 import { PagesService, type PageDto } from '../pages/pages.service';
 import { S3Service } from '../s3/s3.service';
+import { SiteSettingsService } from '../site-settings/site-settings.service';
 
 interface MFile {
   fieldname: string;
@@ -55,6 +56,7 @@ export class AdminController {
     private readonly postsService: PostsService,
     private readonly pagesService: PagesService,
     private readonly s3Service: S3Service,
+    private readonly siteSettings: SiteSettingsService,
   ) {}
 
   /** Overall site statistics */
@@ -198,6 +200,7 @@ export class AdminController {
       seoDescription?: string;
       seoKeywords?: string;
       featuredImage?: string;
+      faqs?: { question: string; answer: string }[];
     },
     @Request() req: { user: { username?: string } },
   ) {
@@ -218,6 +221,7 @@ export class AdminController {
       seoDescription?: string;
       seoKeywords?: string;
       featuredImage?: string;
+      faqs?: { question: string; answer: string }[];
     },
   ) {
     return this.postsService.update(id, body);
@@ -257,6 +261,17 @@ export class AdminController {
   @Delete('pages/:id')
   deletePage(@Param('id', ParseIntPipe) id: number) {
     return this.pagesService.remove(id);
+  }
+
+  /** Site display settings */
+  @Get('site-settings')
+  getSiteSettings() {
+    return this.siteSettings.get();
+  }
+
+  @Patch('site-settings')
+  updateSiteSettings(@Body() body: { blogPostsPerPage?: number }) {
+    return this.siteSettings.update(body);
   }
 
   /** Promote a user to admin role by email */
