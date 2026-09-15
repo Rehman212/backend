@@ -805,10 +805,18 @@ export class PdfController {
     @Res() res: Response,
   ) {
     if (!file) return this.err(res, 400, 'No file uploaded.');
+    const password = (body.password ?? '').trim();
+    if (!password) {
+      return this.err(res, 400, 'This PDF is password-protected. Enter the password used to open it.');
+    }
     try {
-      this.reply(res, await this.svc.unlock(file.buffer, body.password), this.baseName(file.originalname));
+      this.reply(res, await this.svc.unlock(file.buffer, password), this.baseName(file.originalname));
     } catch (e) {
-      this.err(res, 500, (e as Error).message);
+      const msg = (e as Error).message || '';
+      if (/WrongPassword/i.test(msg)) {
+        return this.err(res, 400, 'Wrong password. Use the password that opens this PDF, then try again.');
+      }
+      this.err(res, 500, msg);
     }
   }
 

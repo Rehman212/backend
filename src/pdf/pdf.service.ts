@@ -2223,10 +2223,15 @@ export class PdfService {
     const { server_filename } = await uploadRes.json() as { server_filename: string };
 
     /* 4. Process */
-    const processBody: Record<string, any> = {
+    const fileEntry: Record<string, string> = {
+      server_filename,
+      filename: 'document.pdf',
+    };
+    if (password) fileEntry.password = password;
+    const processBody: Record<string, unknown> = {
       task,
       tool: 'unlock',
-      files: [{ server_filename, filename: 'document.pdf' }],
+      files: [fileEntry],
     };
     if (password) processBody.password = password;
     const processRes = await fetch(`https://${server}/v1/process`, {
