@@ -48,6 +48,10 @@ function slugify(text: string) {
     .replace(/^-+|-+$/g, '');
 }
 
+function normalizeSlug(raw: string) {
+  return slugify((raw || '').trim().replace(/^\/+|\/+$/g, ''));
+}
+
 const MAX_POST_WORDS = 5000;
 
 function countWords(html: string) {
@@ -70,7 +74,7 @@ function serialize(post: BlogPost) {
   return {
     id: String(post.id),
     title: post.title,
-    slug: post.slug,
+    slug: normalizeSlug(post.slug),
     excerpt: post.excerpt ?? '',
     content: post.content ?? '',
     status: post.status,
@@ -107,7 +111,7 @@ export class PostsService {
     const title = dto.title?.trim();
     if (!title) throw new BadRequestException('Title is required');
 
-    const slug = dto.slug?.trim() || slugify(title);
+    const slug = normalizeSlug(dto.slug?.trim() || slugify(title));
     if (!slug) throw new BadRequestException('Slug is required');
 
     assertContentWordLimit(dto.content);
@@ -144,7 +148,7 @@ export class PostsService {
     }
 
     if (dto.slug !== undefined) {
-      const slug = dto.slug.trim() || slugify(post.title);
+      const slug = normalizeSlug(dto.slug.trim() || slugify(post.title));
       if (!slug) throw new BadRequestException('Slug is required');
       if (slug !== post.slug) {
         const existing = await this.postRepo.findOne({ where: { slug } });
@@ -185,9 +189,17 @@ export class PostsService {
   }
 
   async findPublishedBySlug(slug: string) {
-    const post = await this.postRepo.findOne({
-      where: { slug, status: 'published' },
+    const clean = normalizeSlug(slug);
+    let post = await this.postRepo.findOne({
+      where: { slug: clean, status: 'published' },
     });
+    if (!post) {
+      post = await this.postRepo
+        .createQueryBuilder('p')
+        .where('p.status = :status', { status: 'published' })
+        .andWhere("TRIM(BOTH '/' FROM p.slug) = :clean", { clean })
+        .getOne();
+    }
     if (!post) throw new NotFoundException('Post not found');
     return serialize(post);
   }
