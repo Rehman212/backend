@@ -7,6 +7,7 @@ import {
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { BlogPost } from './blog-post.entity';
+import { normalizeBlogContent } from './normalize-blog-content';
 
 export type BlogFaq = { question: string; answer: string };
 
@@ -123,7 +124,7 @@ export class PostsService {
       title,
       slug,
       excerpt: dto.excerpt?.trim() ?? '',
-      content: dto.content ?? '',
+      content: normalizeBlogContent(dto.content ?? ''),
       status: dto.status ?? 'draft',
       author: author || 'Admin',
       seoTitle: dto.seoTitle?.trim() ?? '',
@@ -160,7 +161,7 @@ export class PostsService {
     if (dto.excerpt !== undefined) post.excerpt = dto.excerpt;
     if (dto.content !== undefined) {
       assertContentWordLimit(dto.content);
-      post.content = dto.content;
+      post.content = normalizeBlogContent(dto.content);
     }
     if (dto.status !== undefined) post.status = dto.status;
     if (dto.seoTitle !== undefined) post.seoTitle = dto.seoTitle.trim();
@@ -202,5 +203,24 @@ export class PostsService {
     }
     if (!post) throw new NotFoundException('Post not found');
     return serialize(post);
+  }
+
+  /** One-shot: rewrite stored HTML so long fake headings become paragraphs. */
+  async fixAllHeadingStructure() {
+    const posts = await this.postRepo.find();
+    let updated = 0;
+    const changed: { id: number; slug: string }[] = [];
+
+    for (const post of posts) {
+      const next = normalizeBlogContent(post.content ?? '');
+      if (next !== (post.content ?? '')) {
+        post.content = next;
+        await this.postRepo.save(post);
+        updated += 1;
+        changed.push({ id: post.id, slug: post.slug });
+      }
+    }
+
+    return { total: posts.length, updated, changed };
   }
 }

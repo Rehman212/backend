@@ -146,6 +146,12 @@ export class AdminController {
     return { url };
   }
 
+  /** Rewrite all blog HTML: long fake H2/H3 body text → <p>, keep real short headings */
+  @Post('posts/fix-headings')
+  fixPostHeadings() {
+    return this.postsService.fixAllHeadingStructure();
+  }
+
   /** General site media (header/footer logos) — PNG/WebP/JPG, max 500KB */
   @Post('media')
   @UseInterceptors(
