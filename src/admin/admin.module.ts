@@ -4,13 +4,21 @@ import { User } from '../users/user.entity';
 import { ConversionRecord } from '../conversions/conversion.entity';
 import { PostsModule } from '../posts/posts.module';
 import { PagesModule } from '../pages/pages.module';
+import { ToolPagesModule } from '../tool-pages/tool-pages.module';
 import { S3Module } from '../s3/s3.module';
 import { SiteSettingsModule } from '../site-settings/site-settings.module';
 import { AdminService } from './admin.service';
 import { AdminController } from './admin.controller';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([User, ConversionRecord]), PostsModule, PagesModule, S3Module, SiteSettingsModule],
+  imports: [
+    TypeOrmModule.forFeature([User, ConversionRecord]),
+    PostsModule,
+    PagesModule,
+    ToolPagesModule,
+    S3Module,
+    SiteSettingsModule,
+  ],
   controllers: [AdminController],
   providers: [AdminService],
 })

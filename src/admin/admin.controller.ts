@@ -3,6 +3,7 @@ import {
   Get,
   Post,
   Patch,
+  Put,
   Delete,
   Body,
   Query,
@@ -22,6 +23,7 @@ import { Roles } from '../auth/roles.decorator';
 import { AdminService } from './admin.service';
 import { PostsService } from '../posts/posts.service';
 import { PagesService, type PageDto } from '../pages/pages.service';
+import { ToolPagesService } from '../tool-pages/tool-pages.service';
 import { S3Service } from '../s3/s3.service';
 import { SiteSettingsService } from '../site-settings/site-settings.service';
 
@@ -55,6 +57,7 @@ export class AdminController {
     private readonly adminService: AdminService,
     private readonly postsService: PostsService,
     private readonly pagesService: PagesService,
+    private readonly toolPagesService: ToolPagesService,
     private readonly s3Service: S3Service,
     private readonly siteSettings: SiteSettingsService,
   ) {}
@@ -267,6 +270,49 @@ export class AdminController {
   @Delete('pages/:id')
   deletePage(@Param('id', ParseIntPipe) id: number) {
     return this.pagesService.remove(id);
+  }
+
+  /** Per-tool public page content (rich HTML below the tool UI) */
+  @Get('tool-pages')
+  listToolPages() {
+    return this.toolPagesService.list();
+  }
+
+  @Get('tool-pages/:slug')
+  async getToolPage(@Param('slug') slug: string) {
+    const page = await this.toolPagesService.findBySlug(slug);
+    return (
+      page ?? {
+        slug,
+        heroTitle: '',
+        heroDescription: '',
+        content: '',
+        features: [],
+        faqs: [],
+        createdAt: null,
+        updatedAt: null,
+      }
+    );
+  }
+
+  @Put('tool-pages/:slug')
+  upsertToolPage(
+    @Param('slug') slug: string,
+    @Body()
+    body: {
+      heroTitle?: string;
+      heroDescription?: string;
+      content?: string;
+      features?: { title: string; body: string }[];
+      faqs?: { question: string; answer: string }[];
+    },
+  ) {
+    return this.toolPagesService.upsert(slug, body);
+  }
+
+  @Delete('tool-pages/:slug')
+  deleteToolPage(@Param('slug') slug: string) {
+    return this.toolPagesService.remove(slug);
   }
 
   /** Site display settings */
