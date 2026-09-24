@@ -11,6 +11,12 @@ export class PostsController {
     return this.postsService.findPublished();
   }
 
+  /** Slug + dates only — used by Next.js sitemap (must stay above :slug). */
+  @Get('sitemap')
+  sitemap() {
+    return this.postsService.findPublishedSitemap();
+  }
+
   @Get(':slug')
   async getBySlug(@Param('slug') slug: string) {
     try {

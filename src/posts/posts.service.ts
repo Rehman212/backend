@@ -53,6 +53,19 @@ function normalizeSlug(raw: string) {
   return slugify((raw || '').trim().replace(/^\/+|\/+$/g, ''));
 }
 
+function excerptFromHtml(html: string, max = 160): string {
+  const text = (html ?? '')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!text) return '';
+  if (text.length <= max) return text;
+  const cut = text.slice(0, max - 1);
+  const lastSpace = cut.lastIndexOf(' ');
+  return `${(lastSpace > 80 ? cut.slice(0, lastSpace) : cut).trim()}…`;
+}
+
 const MAX_POST_WORDS = 5000;
 
 function countWords(html: string) {
@@ -90,6 +103,26 @@ function serialize(post: BlogPost) {
   };
 }
 
+/** List/card payload — omit heavy HTML bodies so /posts stays crawl-friendly. */
+function serializeSummary(post: BlogPost) {
+  return {
+    id: String(post.id),
+    title: post.title,
+    slug: normalizeSlug(post.slug),
+    excerpt: post.excerpt ?? '',
+    content: '',
+    status: post.status,
+    author: post.author,
+    seoTitle: post.seoTitle ?? '',
+    seoDescription: post.seoDescription ?? '',
+    seoKeywords: post.seoKeywords ?? '',
+    featuredImage: post.featuredImage ?? '',
+    faqs: [] as BlogFaq[],
+    createdAt: post.createdAt.toISOString(),
+    updatedAt: post.updatedAt.toISOString(),
+  };
+}
+
 @Injectable()
 export class PostsService {
   constructor(
@@ -120,15 +153,19 @@ export class PostsService {
     const existing = await this.postRepo.findOne({ where: { slug } });
     if (existing) throw new ConflictException('A post with this slug already exists');
 
+    const content = normalizeBlogContent(dto.content ?? '');
+    const excerpt = dto.excerpt?.trim() || excerptFromHtml(content);
+    const seoDescription = dto.seoDescription?.trim() || excerpt;
+
     const post = this.postRepo.create({
       title,
       slug,
-      excerpt: dto.excerpt?.trim() ?? '',
-      content: normalizeBlogContent(dto.content ?? ''),
+      excerpt,
+      content,
       status: dto.status ?? 'draft',
       author: author || 'Admin',
       seoTitle: dto.seoTitle?.trim() ?? '',
-      seoDescription: dto.seoDescription?.trim() ?? '',
+      seoDescription,
       seoKeywords: dto.seoKeywords?.trim() ?? '',
       featuredImage: dto.featuredImage?.trim() ?? '',
       faqs: normalizeFaqs(dto.faqs),
@@ -158,17 +195,24 @@ export class PostsService {
       post.slug = slug;
     }
 
-    if (dto.excerpt !== undefined) post.excerpt = dto.excerpt;
+    if (dto.excerpt !== undefined) post.excerpt = dto.excerpt.trim();
     if (dto.content !== undefined) {
       assertContentWordLimit(dto.content);
       post.content = normalizeBlogContent(dto.content);
     }
     if (dto.status !== undefined) post.status = dto.status;
     if (dto.seoTitle !== undefined) post.seoTitle = dto.seoTitle.trim();
-    if (dto.seoDescription !== undefined) post.seoDescription = dto.seoDescription;
+    if (dto.seoDescription !== undefined) post.seoDescription = dto.seoDescription.trim();
     if (dto.seoKeywords !== undefined) post.seoKeywords = dto.seoKeywords.trim();
     if (dto.featuredImage !== undefined) post.featuredImage = dto.featuredImage.trim();
     if (dto.faqs !== undefined) post.faqs = normalizeFaqs(dto.faqs);
+
+    if (!post.excerpt?.trim()) {
+      post.excerpt = excerptFromHtml(post.content);
+    }
+    if (!post.seoDescription?.trim()) {
+      post.seoDescription = post.excerpt?.trim() || excerptFromHtml(post.content);
+    }
 
     const saved = await this.postRepo.save(post);
     return serialize(saved);
@@ -185,8 +229,36 @@ export class PostsService {
     const posts = await this.postRepo.find({
       where: { status: 'published' },
       order: { createdAt: 'DESC' },
+      select: [
+        'id',
+        'title',
+        'slug',
+        'excerpt',
+        'status',
+        'author',
+        'seoTitle',
+        'seoDescription',
+        'seoKeywords',
+        'featuredImage',
+        'createdAt',
+        'updatedAt',
+      ],
     });
-    return posts.map(serialize);
+    return posts.map(serializeSummary);
+  }
+
+  /** Ultra-light rows for sitemap.xml only. */
+  async findPublishedSitemap() {
+    const posts = await this.postRepo.find({
+      where: { status: 'published' },
+      order: { updatedAt: 'DESC' },
+      select: ['slug', 'updatedAt', 'createdAt'],
+    });
+    return posts.map((post) => ({
+      slug: normalizeSlug(post.slug),
+      updatedAt: post.updatedAt.toISOString(),
+      createdAt: post.createdAt.toISOString(),
+    }));
   }
 
   async findPublishedBySlug(slug: string) {
