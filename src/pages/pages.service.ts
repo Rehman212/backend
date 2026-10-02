@@ -18,6 +18,7 @@ const RESERVED = new Set([
   'p',
   'api',
   'blog',
+  'tools',
   'favicon.ico',
   'icon.png',
   'logo.webp',

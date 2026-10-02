@@ -84,6 +84,12 @@ function assertContentWordLimit(content?: string) {
   }
 }
 
+function editorialAuthor(raw?: string | null) {
+  const value = (raw || '').trim();
+  if (!value || /^admin$/i.test(value)) return 'GoDocLab Editorial';
+  return value;
+}
+
 function serialize(post: BlogPost) {
   return {
     id: String(post.id),
@@ -92,7 +98,7 @@ function serialize(post: BlogPost) {
     excerpt: post.excerpt ?? '',
     content: post.content ?? '',
     status: post.status,
-    author: post.author,
+    author: editorialAuthor(post.author),
     seoTitle: post.seoTitle ?? '',
     seoDescription: post.seoDescription ?? '',
     seoKeywords: post.seoKeywords ?? '',
@@ -112,7 +118,7 @@ function serializeSummary(post: BlogPost) {
     excerpt: post.excerpt ?? '',
     content: '',
     status: post.status,
-    author: post.author,
+    author: editorialAuthor(post.author),
     seoTitle: post.seoTitle ?? '',
     seoDescription: post.seoDescription ?? '',
     seoKeywords: post.seoKeywords ?? '',
@@ -163,7 +169,7 @@ export class PostsService {
       excerpt,
       content,
       status: dto.status ?? 'draft',
-      author: author || 'Admin',
+      author: editorialAuthor(author),
       seoTitle: dto.seoTitle?.trim() ?? '',
       seoDescription,
       seoKeywords: dto.seoKeywords?.trim() ?? '',
