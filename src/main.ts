@@ -25,12 +25,12 @@ process.on('unhandledRejection', (reason: unknown) => {
 
   if (isDbError) {
     console.error('[DB] Connection unavailable — app continues without database.');
-    return; // swallow, do NOT re-throw
+    return;
   }
 
-  // For everything else, keep default behaviour (log + exit)
+  // pdf.js / canvas can reject after a request already failed. Killing the
+  // process here drops the HTTP connection and the browser shows "Failed to fetch".
   console.error('[UnhandledRejection]', reason);
-  process.exit(1);
 });
 
 async function bootstrap() {
@@ -39,7 +39,7 @@ async function bootstrap() {
   app.setGlobalPrefix('api');
 
   app.enableCors({
-    origin: process.env.ALLOWED_ORIGINS?.split(',') ?? '*',
+    origin: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     credentials: true,
   });

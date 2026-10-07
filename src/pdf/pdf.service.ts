@@ -57,6 +57,156 @@ export class PdfService {
     return Buffer.from(u8);
   }
 
+  /** pdf.js on Node needs canvas.Image (not DOM Image / ImageBitmap). */
+  private bindNodeCanvasGlobals() {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const canvasMod = require('canvas') as {
+      Image: unknown;
+      DOMMatrix?: unknown;
+      Path2D?: unknown;
+      createCanvas: (w: number, h: number) => {
+        width: number;
+        height: number;
+        getContext: (kind: string) => any;
+        toBuffer: (mime?: string, opts?: any) => Buffer;
+      };
+    };
+    const g = globalThis as Record<string, unknown>;
+    if (!g.Image) g.Image = canvasMod.Image;
+    if (canvasMod.DOMMatrix && !g.DOMMatrix) g.DOMMatrix = canvasMod.DOMMatrix;
+    if (canvasMod.Path2D && !g.Path2D) g.Path2D = canvasMod.Path2D;
+    return canvasMod;
+  }
+
+  private pdfJsCanvasFactory(createCanvas: (w: number, h: number) => any) {
+    return {
+      create: (cw: number, ch: number) => {
+        const c = createCanvas(Math.max(1, cw), Math.max(1, ch));
+        const ctx = c.getContext('2d');
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, c.width, c.height);
+        return { canvas: c, context: ctx };
+      },
+      reset: (pair: { canvas: { width: number; height: number }; context: any }, cw: number, ch: number) => {
+        pair.canvas.width = Math.max(1, cw);
+        pair.canvas.height = Math.max(1, ch);
+        pair.context.fillStyle = '#ffffff';
+        pair.context.fillRect(0, 0, pair.canvas.width, pair.canvas.height);
+      },
+      destroy: (pair: { canvas: { width: number; height: number } }) => {
+        pair.canvas.width = 0;
+        pair.canvas.height = 0;
+      },
+    };
+  }
+
+  private async rasterizePdfPagesWithSystemTools(buffer: Buffer, dpi: number): Promise<Buffer[]> {
+    const execAsync = promisify(exec);
+    const tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'pdfwm-'));
+    const inFile = path.join(tmpDir, 'input.pdf');
+    await fs.promises.writeFile(inFile, buffer);
+    const r = Math.round(dpi);
+    const pngOut = path.join(tmpDir, 'page_%04d.png');
+    const prefix = path.join(tmpDir, 'page');
+    const win = process.platform === 'win32';
+    const commands = win
+      ? [
+          `gswin64c -dSAFER -dNOPAUSE -dBATCH -sDEVICE=png16m -r${r} -sOutputFile="${pngOut}" "${inFile}"`,
+          `gswin32c -dSAFER -dNOPAUSE -dBATCH -sDEVICE=png16m -r${r} -sOutputFile="${pngOut}" "${inFile}"`,
+          `pdftoppm -png -r ${r} "${inFile}" "${prefix}"`,
+        ]
+      : [
+          `pdftoppm -png -r ${r} "${inFile}" "${prefix}"`,
+          `gs -dSAFER -dNOPAUSE -dBATCH -sDEVICE=png16m -r${r} -sOutputFile="${pngOut}" "${inFile}"`,
+        ];
+
+    try {
+      for (const cmd of commands) {
+        try {
+          await execAsync(cmd, {
+            timeout: 12_000,
+            windowsHide: true,
+            maxBuffer: 64 * 1024 * 1024,
+          });
+          const files = (await fs.promises.readdir(tmpDir))
+            .filter((f) => f.toLowerCase().endsWith('.png'))
+            .sort();
+          if (files.length) {
+            return await Promise.all(files.map((f) => fs.promises.readFile(path.join(tmpDir, f))));
+          }
+        } catch {
+          /* missing binary or failed — try next */
+        }
+      }
+      throw new Error('No system PDF rasterizer produced pages.');
+    } finally {
+      await fs.promises.rm(tmpDir, { recursive: true, force: true }).catch(() => undefined);
+    }
+  }
+
+  private async renderPdfPageWithTimeout(
+    page: { getViewport: (opts: { scale: number }) => { width: number; height: number }; render: (opts: any) => { promise: Promise<unknown> } },
+    createCanvas: (w: number, h: number) => any,
+    scale: number,
+    timeoutMs: number,
+  ): Promise<Buffer> {
+    const base = page.getViewport({ scale: 1 });
+    const fit = Math.min(scale, 1600 / Math.max(base.width, base.height, 1));
+    const viewport = page.getViewport({ scale: fit });
+    const w = Math.max(1, Math.round(viewport.width));
+    const h = Math.max(1, Math.round(viewport.height));
+    const canvas = createCanvas(w, h);
+    const context = canvas.getContext('2d');
+    context.fillStyle = '#ffffff';
+    context.fillRect(0, 0, w, h);
+    const canvasFactory = this.pdfJsCanvasFactory(createCanvas);
+
+    await Promise.race([
+      page.render({ canvasContext: context, viewport, canvasFactory }).promise,
+      new Promise((_, reject) => {
+        setTimeout(() => reject(new Error('PDF page render timed out')), timeoutMs);
+      }),
+    ]);
+
+    return canvas.toBuffer('image/png');
+  }
+
+  /** Render every PDF page to PNG. Linux uses pdftoppm/gs first; Windows uses pdf.js only. */
+  private async renderPdfPagesToPng(buffer: Buffer, dpi = 144): Promise<Buffer[]> {
+    const safeDpi = Math.min(Math.max(dpi, 72), 144);
+
+    if (process.platform !== 'win32') {
+      try {
+        return await this.rasterizePdfPagesWithSystemTools(buffer, safeDpi);
+      } catch {
+        /* fall through to pdf.js */
+      }
+    }
+
+    const { createCanvas } = this.bindNodeCanvasGlobals();
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const pdfjsLib = require('pdfjs-dist/legacy/build/pdf.js') as any;
+    pdfjsLib.GlobalWorkerOptions.workerSrc = '';
+
+    const pdfDoc = await pdfjsLib.getDocument({
+      data: new Uint8Array(buffer),
+      verbosity: 0,
+      isOffscreenCanvasSupported: false,
+      disableFontFace: true,
+    }).promise;
+
+    const pages: Buffer[] = [];
+    const scale = safeDpi / 72;
+
+    for (let i = 1; i <= pdfDoc.numPages; i++) {
+      const page = await pdfDoc.getPage(i);
+      pages.push(await this.renderPdfPageWithTimeout(page, createCanvas, scale, 20_000));
+    }
+
+    if (!pages.length) throw new BadRequestException('This PDF has no pages to process.');
+    return pages;
+  }
+
   /**
    * Strip characters that pdf-lib's WinAnsi (Helvetica) font cannot encode.
    * - Invisible / zero-width chars (U+200B, U+FEFF, etc.) → removed
@@ -3702,61 +3852,29 @@ export class PdfService {
    * ─────────────────────────────────────────────────────────────────────── */
   async removePdfWatermark(buffer: Buffer, strength = 60): Promise<PdfResult> {
     const pct = Math.max(10, Math.min(100, strength)) / 100;
-    const scale = 150 / 72; // 150 DPI
+    const dpi = 144;
+    const threshold = Math.round(210 - pct * 60);
 
-    // Pixels above this value get pushed toward/to white.
-    // Content text is typically < 100, watermarks typically 130-230.
-    // Pixels with luminance above this are treated as watermark and set to white.
-    // Content text is typically < 100 luminance; watermarks typically 130–230.
-    const threshold = Math.round(210 - pct * 60); // ~210 at 0% strength, ~150 at 100%
+    let pageImages: Buffer[];
+    try {
+      pageImages = await this.renderPdfPagesToPng(buffer, dpi);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      throw new BadRequestException(
+        msg.includes('Image or Canvas')
+          ? 'Could not render this PDF for watermark removal. Try another file, or install Ghostscript / poppler-utils on the server.'
+          : `Watermark removal failed: ${msg}`,
+      );
+    }
+    const outDoc = await PDFDocument.create();
 
-    const pdfjsLib = require('pdfjs-dist/legacy/build/pdf.js') as any;
-    const { createCanvas } = require('canvas') as { createCanvas: (w: number, h: number) => any };
-    pdfjsLib.GlobalWorkerOptions.workerSrc = '';
-
-    const pdfDoc = await pdfjsLib.getDocument({ data: new Uint8Array(buffer), verbosity: 0 }).promise;
-    const pageCount: number = pdfDoc.numPages;
-    const cleanedImages: Buffer[] = [];
-
-    for (let i = 1; i <= pageCount; i++) {
-      const page     = await pdfDoc.getPage(i);
-      const viewport = page.getViewport({ scale });
-      const w = Math.round(viewport.width);
-      const h = Math.round(viewport.height);
-
-      const canvas  = createCanvas(w, h);
-      const context = canvas.getContext('2d');
-      // Fill white so transparent PDF areas don't render as dark/black
-      context.fillStyle = '#ffffff';
-      context.fillRect(0, 0, w, h);
-
-      const canvasFactory = {
-        create:  (cw: number, ch: number) => {
-          const c = createCanvas(cw, ch);
-          const ctx = c.getContext('2d');
-          ctx.fillStyle = '#ffffff';
-          ctx.fillRect(0, 0, cw, ch);
-          return { canvas: c, context: ctx };
-        },
-        reset:   (pair: any, cw: number, ch: number) => {
-          pair.canvas.width = cw;
-          pair.canvas.height = ch;
-          pair.context.fillStyle = '#ffffff';
-          pair.context.fillRect(0, 0, cw, ch);
-        },
-        destroy: (pair: any) => { pair.canvas.width = 0; pair.canvas.height = 0; },
-      };
-
-      await page.render({ canvasContext: context, viewport, canvasFactory }).promise;
-      const pageImgBuf = canvas.toBuffer('image/png');
-
-      // Selective whitening: only push light/gray pixels (watermarks) to white.
-      // Dark pixels (text, graphics) are left exactly unchanged.
-      const { data, info } = await (sharp as any)(pageImgBuf)
+    for (const pageImgBuf of pageImages) {
+      const { data, info } = await sharp(pageImgBuf)
+        .ensureAlpha()
         .raw()
         .toBuffer({ resolveWithObject: true });
 
-      const channels: number = info.channels;
+      const channels = info.channels;
       for (let p = 0; p < data.length; p += channels) {
         const lum = data[p] * 0.299 + data[p + 1] * 0.587 + data[p + 2] * 0.114;
         if (lum > threshold) {
@@ -3765,24 +3883,20 @@ export class PdfService {
           data[p + 2] = 255;
           if (channels === 4) data[p + 3] = 255;
         }
-        // else: pixel stays exactly as rendered — text/graphics untouched
       }
 
-      const cleaned = await (sharp as any)(data, {
-        raw: { width: info.width, height: info.height, channels },
+      const jpeg = await sharp(data, {
+        raw: { width: info.width, height: info.height, channels: channels as 1 | 2 | 3 | 4 },
       })
-        .png()
+        .flatten({ background: '#ffffff' })
+        .jpeg({ quality: 90, mozjpeg: true })
         .toBuffer();
 
-      cleanedImages.push(cleaned);
-    }
-
-    // Rebuild PDF from cleaned images
-    const outDoc = await PDFDocument.create();
-    for (const imgBuf of cleanedImages) {
-      const pngImage = await outDoc.embedPng(imgBuf);
-      const pg = outDoc.addPage([pngImage.width, pngImage.height]);
-      pg.drawImage(pngImage, { x: 0, y: 0, width: pngImage.width, height: pngImage.height });
+      const embedded = await outDoc.embedJpg(jpeg);
+      const pageW = (info.width * 72) / dpi;
+      const pageH = (info.height * 72) / dpi;
+      const pg = outDoc.addPage([pageW, pageH]);
+      pg.drawImage(embedded, { x: 0, y: 0, width: pageW, height: pageH });
     }
 
     const pdfBytes = await outDoc.save();

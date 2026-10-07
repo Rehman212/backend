@@ -36,14 +36,16 @@ export class PdfController {
       .trim() || fallback;
   }
 
+  /**
+   * JSON envelope (base64) so browser download managers / IDM cannot hijack
+   * the POST. The SPA reconstructs a Blob locally for the user download.
+   */
   private reply(res: Response, r: PdfResult, filename: string): void {
-    res.set({
-      'Content-Type': r.mime,
-      'Content-Disposition': `attachment; filename="${filename}.${r.ext}"`,
-      'Content-Length': String(r.buffer.length),
-      'Access-Control-Expose-Headers': 'Content-Disposition',
+    res.status(HttpStatus.OK).json({
+      filename: `${filename}.${r.ext}`,
+      mime: r.mime,
+      data: r.buffer.toString('base64'),
     });
-    res.status(HttpStatus.OK).send(r.buffer);
   }
 
   private err(res: Response, status: number, msg: string): void {
@@ -1236,11 +1238,14 @@ export class PdfController {
   ) {
     if (!file) return this.err(res, 400, 'No file uploaded.');
     try {
+      console.log(`[remove-watermark] ${file.originalname} ${file.size} bytes`);
       const strength = parseInt(body.strength ?? '60', 10);
       const result   = await this.svc.removePdfWatermark(file.buffer, strength);
       this.reply(res, result, this.baseName(file.originalname));
     } catch (e) {
-      this.err(res, 500, (e as Error).message);
+      const msg = (e as Error).message || 'Watermark removal failed';
+      console.error('[remove-watermark]', msg);
+      this.err(res, 400, msg);
     }
   }
 }

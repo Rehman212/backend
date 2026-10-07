@@ -27,13 +27,11 @@ export class ImageController {
 
   /* ── helper: sends binary image response ──────────────────────────────── */
   private reply(res: Response, result: ImageResult, filename: string): void {
-    res.set({
-      'Content-Type': result.mime,
-      'Content-Disposition': `attachment; filename="${filename}.${result.ext}"`,
-      'Content-Length': String(result.buffer.length),
-      'Access-Control-Expose-Headers': 'Content-Disposition',
+    res.status(HttpStatus.OK).json({
+      filename: `${filename}.${result.ext}`,
+      mime: result.mime,
+      data: result.buffer.toString('base64'),
     });
-    res.status(HttpStatus.OK).send(result.buffer);
   }
 
   /* ── error helper ─────────────────────────────────────────────────────── */
