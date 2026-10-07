@@ -25,8 +25,15 @@ jobs:
 
             git pull origin main
 
-            # Drop old container, rebuild with smaller context (.dockerignore)
-            docker compose down
+            docker compose down || true
+
+            # Free disk BEFORE rebuild — last deploy died with "no space left on device"
+            docker builder prune -af || true
+            docker image prune -af || true
+            docker container prune -f || true
+            df -h
+
             docker compose up -d --build --remove-orphans
 
-            docker image prune -f
+            docker image prune -f || true
+            df -h

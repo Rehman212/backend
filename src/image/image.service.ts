@@ -462,21 +462,23 @@ export class ImageService {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const puppeteer = require('puppeteer') as typeof import('puppeteer');
 
-    // Use installed Chrome if the bundled Chromium isn't found
     const chromePaths = [
+      process.env.PUPPETEER_EXECUTABLE_PATH,
       'C:/Program Files/Google/Chrome/Application/chrome.exe',
       'C:/Program Files (x86)/Google/Chrome/Application/chrome.exe',
       '/usr/bin/google-chrome',
       '/usr/bin/chromium-browser',
       '/usr/bin/chromium',
-    ];
+    ].filter((p): p is string => Boolean(p));
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const fs = require('fs') as typeof import('fs');
-    const executablePath = chromePaths.find(p => { try { return fs.existsSync(p); } catch { return false; } });
+    const executablePath = chromePaths.find((p) => {
+      try { return fs.existsSync(p); } catch { return false; }
+    });
 
     const browser = await puppeteer.launch({
       headless: true,
-      executablePath,
+      ...(executablePath ? { executablePath } : {}),
       args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-gpu', '--disable-dev-shm-usage'],
     });
 

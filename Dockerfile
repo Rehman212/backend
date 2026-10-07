@@ -2,7 +2,13 @@ FROM node:22
 
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y \
+ENV DEBIAN_FRONTEND=noninteractive
+# Do not download Puppeteer's bundled Chrome (~300MB) — it filled the EC2 disk.
+ENV PUPPETEER_SKIP_DOWNLOAD=true
+ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
+ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 \
     make \
     g++ \
@@ -22,15 +28,18 @@ RUN apt-get update && apt-get install -y \
     poppler-utils \
     poppler-data \
     tesseract-ocr \
+    chromium \
     && rm -rf /var/lib/apt/lists/*
 
 COPY package*.json ./
 
-RUN npm install
+RUN npm install \
+    && rm -rf /root/.cache/puppeteer /tmp/*
 
 COPY . .
 
-RUN npm run build
+RUN npm run build \
+    && rm -rf /tmp/*
 
 EXPOSE 4000
 
