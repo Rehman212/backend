@@ -1,4 +1,6 @@
 import { NestFactory } from '@nestjs/core';
+import { NestExpressApplication } from '@nestjs/platform-express';
+import { json, urlencoded } from 'express';
 import { AppModule } from './app.module';
 
 /**
@@ -34,7 +36,14 @@ process.on('unhandledRejection', (reason: unknown) => {
 });
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule, { abortOnError: false });
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, {
+    abortOnError: false,
+    // Default 100kb JSON limit rejects blog/CMS HTML ("request entity too large").
+    bodyParser: false,
+  });
+
+  app.use(json({ limit: '20mb' }));
+  app.use(urlencoded({ extended: true, limit: '20mb' }));
 
   app.setGlobalPrefix('api');
 
